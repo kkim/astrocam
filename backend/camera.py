@@ -28,8 +28,14 @@ class SV205Camera:
             "total": 0,
             "interval": 0,
             "last_capture_time": 0,
-            "directory": "captures"
+            "directory": "/home/kio/projects/astrocam/captures"
         }
+        
+        # Ensure directory exists
+        import os
+        if not os.path.exists(self.sequence_info["directory"]):
+            os.makedirs(self.sequence_info["directory"])
+            
         self.sequence_stop_event = threading.Event()
         
         # Default resolution
@@ -301,10 +307,13 @@ class SV205Camera:
                     filename = f"seq_{timestamp}.jpg"
                     filepath = os.path.join(self.sequence_info["directory"], filename)
                     
-                    cv2.imwrite(filepath, frame)
-                    self.sequence_info["count"] += 1
-                    self.sequence_info["last_capture_time"] = time.time()
-                    print(f"Captured {self.sequence_info['count']}/{self.sequence_info['total']}: {filename}")
+                    success = cv2.imwrite(filepath, frame)
+                    if success:
+                        self.sequence_info["count"] += 1
+                        self.sequence_info["last_capture_time"] = time.time()
+                        print(f"Captured {self.sequence_info['count']}/{self.sequence_info['total']}: {filename}")
+                    else:
+                        print(f"Failed to write image: {filepath}")
             
             time.sleep(0.1)
             
