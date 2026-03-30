@@ -2,6 +2,8 @@ import cv2
 import threading
 import time
 import numpy as np
+import json
+from logger import event_logger
 
 class SV205Camera:
     def __init__(self, device_id=0):
@@ -151,34 +153,41 @@ class SV205Camera:
             self.mean_brightness = float(frame[h//2, w//2].mean())
 
     def _generate_mock_frame(self):
-        # Create a dark space-like background
-        frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        
-        # Add dynamic noise that can be averaged out
-        noise = np.random.normal(0, 20, (self.height, self.width, 3)).astype(np.int16)
-        frame = cv2.add(frame.astype(np.int16), noise)
-        frame = np.clip(frame, 0, 255).astype(np.uint8)
+        # 1. Create background with random noise: mean 5% (12.75), std 5% (12.75)
+        mean = 255 * 0.05
+        std = 255 * 0.05
+        noise = np.random.normal(mean, std, (self.height, self.width, 3)).astype(np.float32)
+        frame = np.clip(noise, 0, 255).astype(np.uint8)
 
-        # Add some persistent "stars" (random noise)
-        np.random.seed(42) # Keep stars in the same place
-        star_noise = np.random.randint(0, 255, (self.height, self.width), dtype=np.uint8)
-        mask = star_noise > 252
-        frame[mask] = [255, 255, 255]
+        # Use a fixed seed for stars
+        np.random.seed(42)
+        
+        # 2. 100 stars: 100% brightness, r=0.5px, anti-aliased
+        # (r=0.5 is effectively a single pixel or very small circle)
+        for _ in range(100):
+            x, y = np.random.randint(0, self.width), np.random.randint(0, self.height)
+            cv2.circle(frame, (x, y), 0, (255, 255, 255), -1, cv2.LINE_AA)
+            
+        # 3. 20 stars: 100% brightness, r=1.0px, anti-aliased
+        for _ in range(20):
+            x, y = np.random.randint(0, self.width), np.random.randint(0, self.height)
+            cv2.circle(frame, (x, y), 1, (255, 255, 255), -1, cv2.LINE_AA)
+            
+        # 4. 10 stars: 100% brightness, r=1.5px, anti-aliased
+        for _ in range(10):
+            x, y = np.random.randint(0, self.width), np.random.randint(0, self.height)
+            cv2.circle(frame, (x, y), 2, (255, 255, 255), -1, cv2.LINE_AA)
+            
+        # 5. 2 stars: 100% brightness, r=2.0px, anti-aliased
+        for _ in range(2):
+            x, y = np.random.randint(0, self.width), np.random.randint(0, self.height)
+            cv2.circle(frame, (x, y), 3, (255, 255, 255), -1, cv2.LINE_AA)
+
         np.random.seed(None) # Reset seed
         
-        # Add a moving "planet"
-        t = time.time()
-        cx = int(self.width / 2 + (self.width / 4) * np.cos(t * 0.5))
-        cy = int(self.height / 2 + (self.height / 4) * np.sin(t * 0.5))
-        cv2.circle(frame, (cx, cy), 50, (100, 150, 255), -1)
-        
-        # Add text
-        cv2.putText(frame, f"MOCK MODE - {time.strftime('%H:%M:%S')}", (50, 100), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 3)
-        cv2.putText(frame, f"Res: {self.width}x{self.height}", (50, 180), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
-        cv2.putText(frame, f"Avg: {self.n_avg} frames", (50, 260), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 2)
+        # Minimal text
+        cv2.putText(frame, f"MOCK - {time.strftime('%H:%M:%S')}", (20, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
         
         return frame
 
@@ -283,13 +292,12 @@ class SV205Camera:
         self.sequence_info["interval"] = interval_sec
         self.sequence_stop_event.clear()
         
+        event_logger.log(f"Sequence: Starting {count} frames @ {interval_sec}s")
         thread = threading.Thread(target=self._sequence_loop, daemon=True)
         thread.start()
         return True
 
     def _sequence_loop(self):
-        print(f"Starting capture sequence: {self.sequence_info['total']} frames, {self.sequence_info['interval']}s interval")
-        
         import os
         from datetime import datetime
         
@@ -311,14 +319,14 @@ class SV205Camera:
                     if success:
                         self.sequence_info["count"] += 1
                         self.sequence_info["last_capture_time"] = time.time()
-                        print(f"Captured {self.sequence_info['count']}/{self.sequence_info['total']}: {filename}")
+                        event_logger.log(f"Sequence: {self.sequence_info['count']}/{self.sequence_info['total']} - {filename}")
                     else:
-                        print(f"Failed to write image: {filepath}")
+                        event_logger.log(f"Error: Failed to write {filepath}")
             
             time.sleep(0.1)
             
         self.sequence_info["active"] = False
-        print("Sequence capture complete.")
+        event_logger.log("Sequence: Complete")
 
     def close(self):
         self.is_running = False
