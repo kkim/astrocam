@@ -37,6 +37,17 @@ class SV205Camera:
         self.height = 1080
         self.format = 'MJPG'
         
+        # Default parameter values for mock mode / state tracking
+        self.params = {
+            "brightness": 128,
+            "contrast": 32,
+            "saturation": 64,
+            "gain": 0,
+            "exposure": 156,
+            "sharpness": 2,
+            "auto_exposure": 0
+        }
+        
         self._init_camera()
         
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
@@ -215,31 +226,45 @@ class SV205Camera:
             if prop == "average":
                 with self.lock:
                     self.n_avg = int(value)
-            elif prop == "auto_exposure":
-                val = 3 if value > 0 else 1
-                self.cap.set(mapping[prop], val)
             else:
-                self.cap.set(mapping[prop], value)
+                self.params[prop] = value
+                if not self.mock_mode and self.cap and self.cap.isOpened():
+                    if prop == "auto_exposure":
+                        val = 3 if value > 0 else 1
+                        self.cap.set(mapping[prop], val)
+                    else:
+                        self.cap.set(mapping[prop], value)
             return True
         return False
 
     def get_params(self):
-        props = ["brightness", "contrast", "saturation", "gain", "exposure", "sharpness"]
+        props = ["brightness", "contrast", "saturation", "gain", "exposure", "sharpness", "auto_exposure"]
         mapping = {
             "brightness": cv2.CAP_PROP_BRIGHTNESS,
             "contrast": cv2.CAP_PROP_CONTRAST,
             "saturation": cv2.CAP_PROP_SATURATION,
             "gain": cv2.CAP_PROP_GAIN,
             "exposure": cv2.CAP_PROP_EXPOSURE,
-            "sharpness": cv2.CAP_PROP_SHARPNESS
+            "sharpness": cv2.CAP_PROP_SHARPNESS,
+            "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE
         }
         res = {"average": self.n_avg}
-        if not self.cap or not self.cap.isOpened(): return res
-        for p in props:
-            try:
-                res[p] = self.cap.get(mapping[p])
-            except:
-                res[p] = 0
+        
+        # Merge our tracked params (good for mock mode or hardware caching)
+        res.update(self.params)
+        
+        # If hardware is available, try to get actual values
+        if not self.mock_mode and self.cap and self.cap.isOpened():
+            for p in props:
+                try:
+                    val = self.cap.get(mapping[p])
+                    if p == "auto_exposure":
+                        res[p] = 1 if val >= 3 else 0
+                    else:
+                        res[p] = val
+                except:
+                    pass
+                    
         return res
 
     def start_sequence(self, count, interval_sec):

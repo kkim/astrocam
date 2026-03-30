@@ -12,6 +12,7 @@ interface Controls {
   exposure: number;
   sharpness: number;
   average: number;
+  auto_exposure: number;
 }
 
 function App() {
@@ -22,7 +23,8 @@ function App() {
     gain: 0,
     exposure: 156,
     sharpness: 2,
-    average: 1
+    average: 1,
+    auto_exposure: 0
   });
   const [status, setStatus] = useState<string>('Ready');
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
@@ -248,7 +250,40 @@ function App() {
           )}
         </div>
         
-        <div className="control-group">
+        {Object.entries(controls)
+          .filter(([key]) => key !== 'auto_exposure' && (key !== 'exposure' || controls.auto_exposure === 0))
+          .map(([key, value]) => (
+            <div key={key} className="control-group">
+              <label>
+                {key === 'average' ? 'Average (N frames)' : key.charAt(0).toUpperCase() + key.slice(1)}
+              </label>
+              <div className="slider-container">
+                <input 
+                  type="range" 
+                  min={key === 'average' ? '1' : '0'} 
+                  max={key === 'exposure' ? '1000' : (key === 'average' ? '100' : '255')} 
+                  value={value} 
+                  onChange={(e) => updateControl(key, parseInt(e.target.value))}
+                />
+                <div className="value-display">{Math.round(value)}</div>
+              </div>
+            </div>
+          ))}
+
+        <div className="actions">
+          <button onClick={handleCapture}>
+            <Image size={18} /> Capture Frame
+          </button>
+
+          <button 
+            className="secondary" 
+            onClick={() => updateControl('auto_exposure', controls.auto_exposure === 1 ? 0 : 1)}
+          >
+            <Zap size={18} /> {controls.auto_exposure === 1 ? 'Switch to Manual Exp' : 'Switch to Auto Exp'}
+          </button>
+        </div>
+
+        <div className="control-group" style={{ marginTop: '24px', borderTop: '1px solid #30363d', paddingTop: '16px' }}>
           <label>Resolution</label>
           <select 
             className="resolution-select"
@@ -267,38 +302,9 @@ function App() {
             <option value="640x480">640x480 (VGA)</option>
           </select>
         </div>
-
-        {Object.entries(controls).map(([key, value]) => (
-          <div key={key} className="control-group">
-            <label>
-              {key === 'average' ? 'Average (N frames)' : key.charAt(0).toUpperCase() + key.slice(1)}
-            </label>
-            <div className="slider-container">
-              <input 
-                type="range" 
-                min={key === 'average' ? '1' : '0'} 
-                max={key === 'exposure' ? '1000' : (key === 'average' ? '100' : '255')} 
-                value={value} 
-                onChange={(e) => updateControl(key, parseInt(e.target.value))}
-              />
-              <div className="value-display">{Math.round(value)}</div>
-            </div>
-          </div>
-        ))}
-
-        <div className="actions">
-          <button onClick={handleCapture}>
-            <Image size={18} /> Capture Frame
-          </button>
-          <button className="secondary" onClick={() => updateControl('auto_exposure', 1)}>
-            <Zap size={18} /> Auto Exposure
-          </button>
-          <button className="secondary" onClick={() => updateControl('auto_exposure', 0)}>
-            <Zap size={18} /> Manual Exposure
-          </button>
         </div>
-      </div>
-    </div>
+        </div>
+
   );
 }
 
