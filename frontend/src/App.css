@@ -154,6 +154,70 @@ h1 {
   background-color: #161b22 !important;
 }
 
+.input-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.input-group label {
+  display: block;
+  font-size: 11px;
+  color: #8b949e;
+  margin-bottom: 4px;
+}
+
+.input-group input {
+  width: 100%;
+  padding: 8px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #c9d1d9;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.start-seq-btn {
+  width: 100%;
+  padding: 8px;
+  font-size: 13px;
+  background-color: #238636 !important;
+  color: white !important;
+  border: none !important;
+  border-radius: 4px !important;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.sequence-progress {
+  padding: 10px 0;
+}
+
+.progress-text {
+  font-size: 12px;
+  color: #c9d1d9;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.progress-bar-bg {
+  height: 6px;
+  background-color: #30363d;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background-color: #238636;
+  transition: width 0.3s ease;
+}
+
 .control-group {
   margin-bottom: 20px;
 }

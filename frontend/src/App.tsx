@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
-import { Camera, Sliders, Image, Save, Zap, Menu, X } from 'lucide-react';
+import { Camera, Sliders, Image, Save, Zap, Menu, X, Clock } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -26,6 +26,9 @@ function App() {
   });
   const [status, setStatus] = useState<string>('Ready');
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
+  const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
+  const [sequenceStatus, setSequenceStatus] = useState({ active: false, count: 0, total: 0 });
+  const [sequenceConfig, setSequenceConfig] = useState({ count: 10, interval: 2 });
   const [health, setHealth] = useState<{connected: boolean, mean_brightness: number, last_frame_time: number, width: number, height: number, fps: number}>({
     connected: true,
     mean_brightness: 0,
@@ -51,7 +54,16 @@ function App() {
 
       fetch(`${API_BASE}/motor/status`)
         .then(res => res.json())
-        .then(data => setMotorStatus(data))
+        .then(data => {
+          if (!isAdjustingMotor) {
+            setMotorStatus(data);
+          }
+        })
+        .catch(() => {});
+
+      fetch(`${API_BASE}/sequence/status`)
+        .then(res => res.json())
+        .then(data => setSequenceStatus(data))
         .catch(() => {});
     }, 2000);
 
@@ -74,12 +86,21 @@ function App() {
   };
 
   const updateMotorSpeed = (speed: number) => {
+    setIsAdjustingMotor(true);
     setMotorStatus(prev => ({ ...prev, duty_cycle: speed, voltage: (3.3 * speed) / 100 }));
+    
     fetch(`${API_BASE}/motor/speed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ speed })
     });
+
+    // Re-enable polling after 2 seconds of inactivity
+    const timeoutId = (window as any).motorTimeout;
+    if (timeoutId) clearTimeout(timeoutId);
+    (window as any).motorTimeout = setTimeout(() => {
+      setIsAdjustingMotor(false);
+    }, 2000);
   };
 
   const handleResolutionChange = (width: number, height: number) => {
@@ -105,6 +126,22 @@ function App() {
           setStatus(`Error: ${data.error}`);
         }
       });
+  };
+
+  const handleStartSequence = () => {
+    setStatus(`Starting sequence (${sequenceConfig.count} frames)...`);
+    fetch(`${API_BASE}/sequence`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sequenceConfig)
+    }).then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        setStatus('Sequence active');
+      } else {
+        setStatus('Failed to start sequence');
+      }
+    });
   };
 
   return (
@@ -147,26 +184,68 @@ function App() {
           </div>
           
           <div className="control-group">
-            <label>Tracking Speed (PWM %)</label>
+            <label>Tracking Speed (0.2% steps)</label>
             <div className="slider-container">
               <input 
                 type="range" 
                 min="0" 
                 max="100" 
-                step="0.1"
+                step="0.2"
                 value={motorStatus.duty_cycle} 
                 onChange={(e) => updateMotorSpeed(parseFloat(e.target.value))}
               />
-              <div className="value-display">{motorStatus.duty_cycle}%</div>
+              <div className="value-display">{motorStatus.duty_cycle.toFixed(1)}%</div>
             </div>
             <div className="voltage-info">Approx. {motorStatus.voltage.toFixed(2)}V</div>
           </div>
 
           <div className="preset-row">
             <button className="preset-btn" onClick={() => updateMotorSpeed(85)}>Sidereal</button>
-            <button className="preset-btn" onClick={() => updateMotorSpeed(90)}>Drift +</button>
-            <button className="preset-btn" onClick={() => updateMotorSpeed(80)}>Drift -</button>
+            <button className="preset-btn" onClick={() => updateMotorSpeed(Math.min(100, motorStatus.duty_cycle + 0.2))}>Drift +</button>
+            <button className="preset-btn" onClick={() => updateMotorSpeed(Math.max(0, motorStatus.duty_cycle - 0.2))}>Drift -</button>
           </div>
+        </div>
+
+        <div className="control-section">
+          <div className="section-header">
+            <Clock size={16} /> Sequence Capture
+          </div>
+
+          {sequenceStatus.active ? (
+            <div className="sequence-progress">
+              <div className="progress-text">Capturing: {sequenceStatus.count} / {sequenceStatus.total}</div>
+              <div className="progress-bar-bg">
+                <div 
+                  className="progress-bar-fill" 
+                  style={{ width: `${(sequenceStatus.count / sequenceStatus.total) * 100}%` }}
+                ></div>
+              </div>
+            </div>
+          ) : (
+            <div className="sequence-form">
+              <div className="input-row">
+                <div className="input-group">
+                  <label>Frames</label>
+                  <input 
+                    type="number" 
+                    value={sequenceConfig.count} 
+                    onChange={(e) => setSequenceConfig(prev => ({ ...prev, count: parseInt(e.target.value) || 1 }))}
+                  />
+                </div>
+                <div className="input-group">
+                  <label>Interval (s)</label>
+                  <input 
+                    type="number" 
+                    value={sequenceConfig.interval} 
+                    onChange={(e) => setSequenceConfig(prev => ({ ...prev, interval: parseFloat(e.target.value) || 1 }))}
+                  />
+                </div>
+              </div>
+              <button className="start-seq-btn" onClick={handleStartSequence}>
+                <Image size={16} /> Start Sequence
+              </button>
+            </div>
+          )}
         </div>
         
         <div className="control-group">

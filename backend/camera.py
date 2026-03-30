@@ -21,6 +21,17 @@ class SV205Camera:
         self._frame_count = 0
         self._last_fps_calc_time = time.time()
         
+        # Sequence capture state
+        self.sequence_info = {
+            "active": False,
+            "count": 0,
+            "total": 0,
+            "interval": 0,
+            "last_capture_time": 0,
+            "directory": "captures"
+        }
+        self.sequence_stop_event = threading.Event()
+        
         # Default resolution
         self.width = 1920
         self.height = 1080
@@ -230,6 +241,50 @@ class SV205Camera:
             except:
                 res[p] = 0
         return res
+
+    def start_sequence(self, count, interval_sec):
+        if self.sequence_info["active"]:
+            return False
+        
+        self.sequence_info["active"] = True
+        self.sequence_info["total"] = count
+        self.sequence_info["count"] = 0
+        self.sequence_info["interval"] = interval_sec
+        self.sequence_stop_event.clear()
+        
+        thread = threading.Thread(target=self._sequence_loop, daemon=True)
+        thread.start()
+        return True
+
+    def _sequence_loop(self):
+        print(f"Starting capture sequence: {self.sequence_info['total']} frames, {self.sequence_info['interval']}s interval")
+        
+        import os
+        from datetime import datetime
+        
+        while self.sequence_info["count"] < self.sequence_info["total"] and not self.sequence_stop_event.is_set():
+            # Wait for next interval
+            now = time.time()
+            if now - self.sequence_info["last_capture_time"] >= self.sequence_info["interval"]:
+                frame = None
+                with self.lock:
+                    if self.latest_frame is not None:
+                        frame = self.latest_frame.copy()
+                
+                if frame is not None:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                    filename = f"seq_{timestamp}.jpg"
+                    filepath = os.path.join(self.sequence_info["directory"], filename)
+                    
+                    cv2.imwrite(filepath, frame)
+                    self.sequence_info["count"] += 1
+                    self.sequence_info["last_capture_time"] = time.time()
+                    print(f"Captured {self.sequence_info['count']}/{self.sequence_info['total']}: {filename}")
+            
+            time.sleep(0.1)
+            
+        self.sequence_info["active"] = False
+        print("Sequence capture complete.")
 
     def close(self):
         self.is_running = False

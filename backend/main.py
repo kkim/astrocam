@@ -63,6 +63,21 @@ class ResolutionUpdate(BaseModel):
     width: int
     height: int
 
+class SequenceUpdate(BaseModel):
+    count: int
+    interval: float
+
+@app.post("/sequence")
+def start_sequence(req: SequenceUpdate):
+    if not cam: return {"success": False}
+    success = cam.start_sequence(req.count, req.interval)
+    return {"success": success}
+
+@app.get("/sequence/status")
+def get_sequence_status():
+    if not cam: return {"active": False}
+    return cam.sequence_info
+
 @app.post("/resolution")
 def set_resolution(res: ResolutionUpdate):
     if not cam: return {"success": False}
