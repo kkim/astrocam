@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime
 from camera import SV205Camera
 from motor_control import MotorController
+from logger import event_logger
 from pydantic import BaseModel
 
 app = FastAPI()
@@ -24,12 +25,22 @@ app.add_middleware(
 cam = SV205Camera(0)
 motor = MotorController(18)
 
+@app.on_event("shutdown")
+def shutdown_event():
+    event_logger.log("System shutting down...")
+    if cam: cam.close()
+    if motor: motor.close()
+
 class ControlUpdate(BaseModel):
     property: str
     value: float
 
 class MotorSpeedUpdate(BaseModel):
     speed: float
+
+@app.get("/logs")
+def get_logs():
+    return event_logger.get_logs()
 
 @app.get("/motor/status")
 def get_motor_status():
@@ -38,6 +49,8 @@ def get_motor_status():
 @app.post("/motor/speed")
 def set_motor_speed(update: MotorSpeedUpdate):
     success = motor.set_speed(update.speed)
+    if success:
+        event_logger.log(f"Motor speed: {update.speed}%")
     return {"success": success, "speed": update.speed}
 
 @app.get("/stream")
@@ -99,6 +112,8 @@ def get_controls():
 def set_control(update: ControlUpdate):
     if not cam: return {"success": False}
     success = cam.set_param(update.property, update.value)
+    if success:
+        event_logger.log(f"Control: {update.property} -> {update.value}")
     return {"success": success, "property": update.property, "value": update.value}
 
 @app.post("/capture")

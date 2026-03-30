@@ -1,3 +1,6 @@
+import threading
+import time
+
 try:
     from gpiozero import PWMOutputDevice
     HAS_GPIO = True
@@ -9,8 +12,11 @@ class MotorController:
     def __init__(self, pin=18):
         self.pin_number = pin
         self.pin = None
-        self.duty_cycle = 0.0
+        self.current_duty = 0.0
+        self.target_duty = 0.0
         self.mock_mode = not HAS_GPIO
+        self.ramp_thread = None
+        self.stop_ramping = threading.Event()
         self._init_motor()
 
     def _init_motor(self):
@@ -22,26 +28,56 @@ class MotorController:
                 print(f"Failed to initialize GPIO: {e}")
                 self.mock_mode = True
 
-    def set_speed(self, duty_pct):
-        """Sets the motor speed as a percentage (0-100)"""
-        self.duty_cycle = max(0.0, min(100.0, duty_pct))
-        value = self.duty_cycle / 100.0
+    def set_speed(self, duty_pct, ramp_time=0.5):
+        """Sets the motor speed with optional ramping."""
+        self.target_duty = max(0.0, min(100.0, duty_pct))
         
-        if not self.mock_mode and self.pin:
-            self.pin.value = value
+        # Stop any existing ramping
+        if self.ramp_thread and self.ramp_thread.is_alive():
+            self.stop_ramping.set()
+            self.ramp_thread.join()
         
-        print(f"Motor speed set to {self.duty_cycle}% ({3.3 * value:.2f}V)")
+        self.stop_ramping.clear()
+        self.ramp_thread = threading.Thread(target=self._ramp_logic, args=(ramp_time,), daemon=True)
+        self.ramp_thread.start()
         return True
+
+    def _ramp_logic(self, ramp_time):
+        start_duty = self.current_duty
+        end_duty = self.target_duty
+        steps = 20
+        delay = ramp_time / steps
+        
+        for i in range(1, steps + 1):
+            if self.stop_ramping.is_set():
+                break
+            
+            # Linear interpolation
+            self.current_duty = start_duty + (end_duty - start_duty) * (i / steps)
+            value = self.current_duty / 100.0
+            
+            if not self.mock_mode and self.pin:
+                self.pin.value = value
+            
+            time.sleep(delay)
+        
+        self.current_duty = end_duty
+        # Final log for the target
+        # print(f"Motor reached {self.current_duty}%")
 
     def get_status(self):
         return {
-            "duty_cycle": self.duty_cycle,
-            "voltage": round(3.3 * (self.duty_cycle / 100.0), 2),
+            "duty_cycle": round(self.current_duty, 2),
+            "target_duty": self.target_duty,
+            "voltage": round(3.3 * (self.current_duty / 100.0), 2),
             "mock_mode": self.mock_mode,
             "pin": self.pin_number
         }
 
     def close(self):
+        self.stop_ramping.set()
+        if self.ramp_thread:
+            self.ramp_thread.join()
         if self.pin:
             self.pin.value = 0
             self.pin.close()

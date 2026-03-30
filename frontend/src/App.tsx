@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
-import { Camera, Sliders, Image, Save, Zap, Menu, X, Clock } from 'lucide-react';
+import { Camera, Sliders, Image, Save, Zap, Menu, X, Clock, Terminal } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -27,10 +27,12 @@ function App() {
     auto_exposure: 0
   });
   const [status, setStatus] = useState<string>('Ready');
+  const [logs, setLogs] = useState<string[]>([]);
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [sequenceStatus, setSequenceStatus] = useState({ active: false, count: 0, total: 0 });
   const [sequenceConfig, setSequenceConfig] = useState({ count: 10, interval: 2 });
+  const logEndRef = React.useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState<{connected: boolean, mean_brightness: number, last_frame_time: number, width: number, height: number, fps: number}>({
     connected: true,
     mean_brightness: 0,
@@ -67,6 +69,11 @@ function App() {
         .then(res => res.json())
         .then(data => setSequenceStatus(data))
         .catch(() => {});
+
+      fetch(`${API_BASE}/logs`)
+        .then(res => res.json())
+        .then(data => setLogs(data))
+        .catch(() => {});
     }, 2000);
 
     // Initial fetch
@@ -77,6 +84,12 @@ function App() {
 
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs]);
 
   const updateControl = (prop: string, val: number) => {
     setControls(prev => ({ ...prev, [prop]: val }));
@@ -172,6 +185,23 @@ function App() {
             FPS: {health.fps.toFixed(1)}
           </div>
         </div>
+
+        <div className="log-container">
+          <div className="log-header">
+            <Terminal size={14} /> System Logs
+          </div>
+          <div className="log-window">
+            {logs.length === 0 ? (
+              <div className="log-entry empty">System ready. No logs yet.</div>
+            ) : (
+              logs.map((log, i) => (
+                <div key={i} className="log-entry">{log}</div>
+              ))
+            )}
+            <div ref={logEndRef} />
+          </div>
+        </div>
+
         {status && <div className="status-message">{status}</div>}
       </div>
 
