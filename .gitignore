@@ -1,0 +1,25 @@
+# Logs
+*.log
+startup_log.txt
+backend_manual.log
+backend_nohup.log
+frontend_nohup.log
+vite_direct.log
+vite_setsid.log
+
+# Captures
+capture_*.jpg
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+backend/venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db

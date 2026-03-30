@@ -1,0 +1,18 @@
+[Unit]
+Description=AstroCam SV205 Web Interface
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kio
+Group=kio
+WorkingDirectory=/home/kio/projects/astrocam
+ExecStart=/bin/bash /home/kio/projects/astrocam/start.sh
+Restart=always
+RestartSec=10
+# Ensure environment is clean
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target
