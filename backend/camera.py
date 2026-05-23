@@ -2,7 +2,6 @@ import cv2
 import threading
 import time
 import numpy as np
-import json
 from logger import event_logger
 
 class SV205Camera:
@@ -68,7 +67,7 @@ class SV205Camera:
             
             self.cap = cv2.VideoCapture(self.device_id, cv2.CAP_V4L2)
             if not self.cap.isOpened():
-                print("Failed to open camera hardware - Entering MOCK MODE")
+                event_logger.log("Failed to open camera hardware - Entering MOCK MODE")
                 self.mock_mode = True
                 self.connected = True
                 return True
@@ -83,7 +82,7 @@ class SV205Camera:
             # Disable auto-exposure initially
             self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
             
-            print(f"Camera initialized ({self.width}x{self.height} {self.format})")
+            event_logger.log(f"Camera initialized ({self.width}x{self.height} {self.format})")
             return True
 
     def set_resolution(self, width, height):

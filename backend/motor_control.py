@@ -6,6 +6,8 @@ try:
     HAS_GPIO = True
 except (ImportError, RuntimeError):
     HAS_GPIO = False
+    # Using event_logger here would create a circular dependency with motor_control importing logger
+    # and logger being imported by main. Let's keep this as print for now as it's an init error.
     print("GPIO not available, motor control will run in MOCK MODE")
 
 class MotorController:
@@ -25,7 +27,9 @@ class MotorController:
                 self.pin = PWMOutputDevice(self.pin_number)
                 self.pin.value = 0
             except Exception as e:
-                print(f"Failed to initialize GPIO: {e}")
+                # This needs to be a print, not event_logger.log, to avoid circular dependency
+                # as motor_control is instantiated before event_logger is fully ready in some contexts.
+                print(f"Failed to initialize GPIO: {e}") 
                 self.mock_mode = True
 
     def set_speed(self, duty_pct, ramp_time=0.5):
