@@ -116,7 +116,7 @@ class SV205Camera:
                     self._process_frame(frame)
                     
             except Exception as e:
-                print(f"Capture loop error: {e}")
+                event_logger.log(f"Capture loop error: {e}")
                 self._handle_fail()
                 time.sleep(0.5)
 
