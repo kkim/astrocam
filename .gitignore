@@ -23,3 +23,8 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+.aider*
+
+# Captures
+captures/
+.aider*

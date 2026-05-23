@@ -153,6 +153,34 @@ h1 {
   background: #444c56;
 }
 
+.rig-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background-color: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.rig-toggle button {
+  padding: 8px;
+  font-size: 12px;
+  background: transparent !important;
+  border: none !important;
+  color: #8b949e !important;
+  border-radius: 0 !important;
+  font-weight: 500;
+}
+
+.rig-toggle button.active {
+  background-color: #1f6feb !important;
+  color: white !important;
+}
+
+.rig-toggle button:not(.active):hover {
+  background-color: #21262d !important;
+}
+
 .control-section {
   border: 1px solid #30363d;
   border-radius: 6px;

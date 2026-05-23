@@ -9,7 +9,7 @@ class EventLogger:
         timestamp = datetime.now().strftime("%H:%M:%S")
         entry = f"[{timestamp}] {message}"
         self.logs.append(entry)
-        print(entry) # Also print to stdout/backend.log
+        print(entry, flush=True) # Ensure immediate write to log file
 
     def get_logs(self):
         return list(self.logs)

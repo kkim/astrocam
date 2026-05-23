@@ -6,8 +6,7 @@ import cv2
 import os
 import asyncio
 from datetime import datetime
-from camera import SV205Camera
-from motor_control import MotorController
+from astro_rig import get_astro_rig
 from logger import event_logger
 from pydantic import BaseModel
 
@@ -21,15 +20,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize camera and motor
-cam = SV205Camera(0)
-motor = MotorController(18)
+# Unified AstroRig
+rig_mode = "real" # Try real by default
+rig = get_astro_rig(rig_mode, 0, 18)
 
 @app.on_event("shutdown")
 def shutdown_event():
     event_logger.log("System shutting down...")
-    if cam: cam.close()
-    if motor: motor.close()
+    if rig: rig.close()
 
 class ControlUpdate(BaseModel):
     property: str
@@ -38,34 +36,55 @@ class ControlUpdate(BaseModel):
 class MotorSpeedUpdate(BaseModel):
     speed: float
 
+class RigUpdate(BaseModel):
+    mode: str
+
+@app.get("/rig")
+def get_rig_mode():
+    return {"mode": rig_mode}
+
+@app.post("/rig")
+def set_rig_mode(update: RigUpdate):
+    global rig, rig_mode
+    if update.mode == rig_mode:
+        return {"success": True, "mode": rig_mode}
+    
+    event_logger.log(f"Switching rig mode to: {update.mode}")
+    if rig:
+        rig.close()
+    
+    rig_mode = update.mode
+    rig = get_astro_rig(rig_mode, 0, 18)
+    return {"success": True, "mode": rig_mode}
+
 @app.get("/logs")
 def get_logs():
     return event_logger.get_logs()
 
 @app.get("/motor/status")
 def get_motor_status():
-    return motor.get_status()
+    return rig.get_motor_status()
 
 @app.post("/motor/speed")
 def set_motor_speed(update: MotorSpeedUpdate):
-    success = motor.set_speed(update.speed)
+    success = rig.set_motor_speed(update.speed)
     if success:
         event_logger.log(f"Motor speed: {update.speed}%")
     return {"success": success, "speed": update.speed}
 
 @app.get("/stream")
 async def stream():
-    if not cam:
-        return Response(content="Camera not available", status_code=503)
+    if not rig:
+        return Response(content="Rig not available", status_code=503)
         
     async def frame_generator():
         while True:
             try:
-                frame = cam.get_frame()
+                frame = rig.get_frame()
                 if frame:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-                await asyncio.sleep(0.03) # Limit to ~30fps
+                await asyncio.sleep(0.04) # ~25fps
             except Exception as e:
                 print(f"Stream error: {e}")
                 break
@@ -82,52 +101,50 @@ class SequenceUpdate(BaseModel):
 
 @app.post("/sequence")
 def start_sequence(req: SequenceUpdate):
-    if not cam: return {"success": False}
-    success = cam.start_sequence(req.count, req.interval)
+    if not rig: return {"success": False}
+    success = rig.start_sequence(req.count, req.interval)
     return {"success": success}
 
 @app.get("/sequence/status")
 def get_sequence_status():
-    if not cam: return {"active": False}
-    return cam.sequence_info
+    if not rig: return {"active": False}
+    return rig.get_sequence_status()
 
 @app.post("/resolution")
 def set_resolution(res: ResolutionUpdate):
-    if not cam: return {"success": False}
-    success = cam.set_resolution(res.width, res.height)
-    return {"success": success, "width": res.width, "height": res.height}
+    # Resolution switching needs implementation in rigs if needed
+    return {"success": False, "error": "Not implemented in unified rig yet"}
 
 @app.get("/status")
 def get_status():
-    if not cam:
-        return {"connected": False, "mean_brightness": 0, "error": "Camera not initialized"}
-    return cam.get_status()
+    if not rig:
+        return {"connected": False, "mean_brightness": 0, "error": "Rig not initialized"}
+    # Merge camera status with motor mock mode info for UI
+    status = rig.get_camera_status()
+    motor_status = rig.get_motor_status()
+    status["mock_mode"] = motor_status.get("mock_mode", True)
+    # Mock brightness for UI if needed
+    if "mean_brightness" not in status:
+        status["mean_brightness"] = 12.75
+    return status
 
 @app.get("/controls")
 def get_controls():
-    if not cam: return {}
-    return cam.get_params()
+    if not rig: return {}
+    return rig.get_camera_params()
 
 @app.post("/controls")
 def set_control(update: ControlUpdate):
-    if not cam: return {"success": False}
-    success = cam.set_param(update.property, update.value)
+    if not rig: return {"success": False}
+    success = rig.set_camera_param(update.property, update.value)
     if success:
         event_logger.log(f"Control: {update.property} -> {update.value}")
     return {"success": success, "property": update.property, "value": update.value}
 
 @app.post("/capture")
 def capture():
-    if not cam: return {"success": False}
-    frame_data = cam.get_frame()
-    if frame_data:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"capture_{timestamp}.jpg"
-        filepath = os.path.join("/home/kio/projects/astrocam", filename)
-        with open(filepath, "wb") as f:
-            f.write(frame_data)
-        return {"success": True, "filename": filename}
-    return {"success": False, "error": "Could not capture frame"}
+    if not rig: return {"success": False, "error": "Rig not initialized"}
+    return rig.capture_frame()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

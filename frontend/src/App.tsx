@@ -28,6 +28,7 @@ function App() {
   });
   const [status, setStatus] = useState<string>('Ready');
   const [logs, setLogs] = useState<string[]>([]);
+  const [rigMode, setRigMode] = useState<string>('mock');
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [sequenceStatus, setSequenceStatus] = useState({ active: false, count: 0, total: 0 });
@@ -74,6 +75,11 @@ function App() {
         .then(res => res.json())
         .then(data => setLogs(data))
         .catch(() => {});
+
+      fetch(`${API_BASE}/rig`)
+        .then(res => res.json())
+        .then(data => setRigMode(data.mode))
+        .catch(() => {});
     }, 2000);
 
     // Initial fetch
@@ -116,6 +122,21 @@ function App() {
     (window as any).motorTimeout = setTimeout(() => {
       setIsAdjustingMotor(false);
     }, 2000);
+  };
+
+  const handleSwitchRig = (mode: string) => {
+    setStatus(`Switching to ${mode} rig...`);
+    fetch(`${API_BASE}/rig`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode })
+    }).then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        setRigMode(data.mode);
+        setStatus(`Rig set to ${data.mode}`);
+      }
+    });
   };
 
   const handleResolutionChange = (width: number, height: number) => {
@@ -331,10 +352,23 @@ function App() {
             <option value="1280x720">1280x720 (720p)</option>
             <option value="640x480">640x480 (VGA)</option>
           </select>
-        </div>
-        </div>
-        </div>
+          </div>
 
+          <div className="control-group" style={{ marginTop: '12px' }}>
+          <label>Rig Engine</label>
+          <div className="rig-toggle">
+            <button 
+              className={rigMode === 'mock' ? 'active' : ''} 
+              onClick={() => handleSwitchRig('mock')}
+            >Mock</button>
+            <button 
+              className={rigMode === 'real' ? 'active' : ''} 
+              onClick={() => handleSwitchRig('real')}
+            >Real</button>
+          </div>
+          </div>
+          </div>
+          </div>
   );
 }
 
