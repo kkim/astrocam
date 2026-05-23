@@ -59,13 +59,20 @@ class RealAstroRig(BaseAstroRig):
         
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
+        self._last_error_log_time = 0
 
     def _init_camera(self):
         if self.cap: self.cap.release()
         self.cap = cv2.VideoCapture(self.camera_id, cv2.CAP_V4L2)
         if not self.cap.isOpened():
-            event_logger.log("Error: Could not open camera hardware")
+            # Throttle error logging to once every 10 seconds
+            if time.time() - self._last_error_log_time > 10:
+                event_logger.log("Error: Could not open camera hardware")
+                self._last_error_log_time = time.time()
+            with self.lock:
+                self.latest_frame = None
             return False
+        
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.format))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
