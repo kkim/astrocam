@@ -54,12 +54,12 @@ class RealAstroRig(BaseAstroRig):
         if not os.path.exists(self.sequence_info["directory"]):
             os.makedirs(self.sequence_info["directory"])
 
+        self._last_error_log_time = 0
         self._init_camera()
         self._init_motor()
         
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
-        self._last_error_log_time = 0
 
     def _init_camera(self):
         if self.cap: self.cap.release()
