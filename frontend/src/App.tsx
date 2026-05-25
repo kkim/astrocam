@@ -33,6 +33,8 @@ function App() {
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [sequenceStatus, setSequenceStatus] = useState({ active: false, count: 0, total: 0 });
   const [sequenceConfig, setSequenceConfig] = useState({ count: 10, interval: 2 });
+  const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0 });
+  const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0 });
   const logEndRef = React.useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState<{connected: boolean, mean_brightness: number, last_frame_time: number, width: number, height: number, fps: number}>({
     connected: true,
@@ -69,6 +71,11 @@ function App() {
       fetch(`${API_BASE}/sequence/status`)
         .then(res => res.json())
         .then(data => setSequenceStatus(data))
+        .catch(() => {});
+
+      fetch(`${API_BASE}/panorama/status`)
+        .then(res => res.json())
+        .then(data => setPanoramaStatus(data))
         .catch(() => {});
 
       fetch(`${API_BASE}/logs`)
@@ -178,6 +185,26 @@ function App() {
         setStatus('Failed to start sequence');
       }
     });
+  };
+
+  const handleStartPanorama = () => {
+    setStatus(`Starting Panorama (${panoramaConfig.frames} frames)...`);
+    fetch(`${API_BASE}/panorama/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(panoramaConfig)
+    }).then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        setStatus('Panorama construction active');
+      } else {
+        setStatus('Failed to start panorama');
+      }
+    });
+  };
+
+  const handleStopPanorama = () => {
+    fetch(`${API_BASE}/panorama/stop`, { method: 'POST' });
   };
 
   return (
@@ -296,6 +323,51 @@ function App() {
               </div>
               <button className="start-seq-btn" onClick={handleStartSequence}>
                 <Image size={16} /> Start Sequence
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="control-section">
+          <div className="section-header">
+            <Image size={16} /> Panorama Construction
+          </div>
+
+          {panoramaStatus.active ? (
+            <div className="sequence-progress">
+              <div className="progress-text">Processing: {panoramaStatus.current} / {panoramaStatus.total}</div>
+              <div className="progress-bar-bg">
+                <div 
+                  className="progress-bar-fill" 
+                  style={{ width: `${panoramaStatus.progress}%`, backgroundColor: '#aa3bff' }}
+                ></div>
+              </div>
+              <button className="preset-btn" style={{ marginTop: '12px', width: '100%' }} onClick={handleStopPanorama}>
+                Stop Panorama
+              </button>
+            </div>
+          ) : (
+            <div className="sequence-form">
+              <div className="input-row">
+                <div className="input-group">
+                  <label>Total Frames</label>
+                  <input 
+                    type="number" 
+                    value={panoramaConfig.frames} 
+                    onChange={(e) => setPanoramaConfig(prev => ({ ...prev, frames: parseInt(e.target.value) || 1 }))}
+                  />
+                </div>
+                <div className="input-group">
+                  <label>Drift Step (px)</label>
+                  <input 
+                    type="number" 
+                    value={panoramaConfig.drift_step} 
+                    onChange={(e) => setPanoramaConfig(prev => ({ ...prev, drift_step: parseFloat(e.target.value) || 1 }))}
+                  />
+                </div>
+              </div>
+              <button className="start-seq-btn" style={{ backgroundColor: '#aa3bff' }} onClick={handleStartPanorama}>
+                <Zap size={16} /> Start Panorama
               </button>
             </div>
           )}

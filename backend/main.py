@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime
 from astro_rig import get_astro_rig
 from logger import event_logger
+from panorama import PanoramaManager
 from pydantic import BaseModel
 
 app = FastAPI()
@@ -23,6 +24,7 @@ app.add_middleware(
 # Unified AstroRig
 rig_mode = "real" # Try real by default
 rig = get_astro_rig(rig_mode, 0, 18)
+panorama = PanoramaManager(rig)
 
 @app.on_event("shutdown")
 def shutdown_event():
@@ -145,6 +147,24 @@ def set_control(update: ControlUpdate):
 def capture():
     if not rig: return {"success": False, "error": "Rig not initialized"}
     return rig.capture_frame()
+
+class PanoramaUpdate(BaseModel):
+    frames: int
+    drift_step: float
+
+@app.post("/panorama/start")
+def start_panorama(req: PanoramaUpdate):
+    success = panorama.start(req.frames, req.drift_step)
+    return {"success": success}
+
+@app.get("/panorama/status")
+def get_panorama_status():
+    return panorama.get_status()
+
+@app.post("/panorama/stop")
+def stop_panorama():
+    panorama.stop()
+    return {"success": True}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -11,7 +11,7 @@ class MockAstroRig(BaseAstroRig):
     def __init__(self):
         self.width = 1920
         self.height = 1080
-        self.full_width = int(self.width * 1.5)
+        self.full_width = int(self.width * 2.0)
         self.full_height = int(self.height * 1.5)
         self.n_avg = 1
         self.is_running = True
@@ -24,10 +24,15 @@ class MockAstroRig(BaseAstroRig):
         }
         
         # Motor state
-        self.current_duty = 0.0
-        self.target_duty = 0.0
+        self.current_duty = 85.0
+        self.target_duty = 85.0
         self.ramp_thread = None
         self.stop_ramping = threading.Event()
+        
+        # Drift position
+        self.pos_x = self.width * 0.25
+        self.pos_y = self.height * 0.25
+        self.last_update_time = time.time()
         
         # Sequence state
         self.sequence_info = {
@@ -72,6 +77,17 @@ class MockAstroRig(BaseAstroRig):
 
     def _sim_loop(self):
         while self.is_running:
+            # Update simulated position based on drift
+            now = time.time()
+            dt = now - self.last_update_time
+            
+            # Drift Rate: 1% duty difference = 20 pixels/sec drift
+            # 85.0 is neutral (Sidereal)
+            drift_rate = (self.current_duty - 85.0) * 20.0
+            self.pos_x = (self.pos_x + drift_rate * dt) % (self.full_width - self.width)
+            
+            self.last_update_time = now
+            
             frame = self._generate_mock_frame()
             self._process_frame(frame)
             time.sleep(0.04) # 25 FPS
@@ -90,16 +106,9 @@ class MockAstroRig(BaseAstroRig):
                 self.latest_frame = cv2.convertScaleAbs(self.acc_frame)
 
     def _generate_mock_frame(self):
-        # Period: 4 minutes (240 seconds)
-        period = 240.0
-        elapsed = time.time() - self.start_time
-        theta = (elapsed % period) / period * 2 * np.pi
-        
-        # Path: Circular/Elliptical crop offsets
-        # Max horizontal slack is 0.5 * width. Center of slack is 0.25 * width.
-        # Starting at top center means theta=0 -> x=0.25W, y=0
-        cx = int(self.width * 0.25 + self.width * 0.25 * np.sin(theta))
-        cy = int(self.height * 0.25 - self.height * 0.25 * np.cos(theta))
+        # Use simulated positions for crop
+        cx = int(self.pos_x)
+        cy = int(self.pos_y)
         
         # Crop from static starfield
         crop = self.static_starfield[cy:cy+self.height, cx:cx+self.width].copy()
@@ -109,6 +118,7 @@ class MockAstroRig(BaseAstroRig):
         frame = cv2.addWeighted(crop, 1.0, noise, 0.5, 0)
 
         cv2.putText(frame, f"MOCK DRIFT - {time.strftime('%H:%M:%S')}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+        cv2.putText(frame, f"Speed: {self.current_duty:.1f}%", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 150, 0), 1)
         return frame
 
     def get_frame(self):
