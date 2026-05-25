@@ -56,22 +56,32 @@ class MockAstroRig(BaseAstroRig):
         self.thread.start()
 
     def _generate_static_starfield(self):
-        # Dark background
-        img = np.zeros((self.full_height, self.full_width, 3), dtype=np.uint8)
+        # Dark background with a faint glow
+        img = np.full((self.full_height, self.full_width, 3), 15, dtype=np.uint8)
         
         # Seed for consistent starfield
         rng = np.random.default_rng(42)
         
         # Add thousands of stars
-        for _ in range(2000):
+        for _ in range(3000):
             x = rng.integers(0, self.full_width)
             y = rng.integers(0, self.full_height)
-            size = rng.choice([0, 1, 2], p=[0.8, 0.15, 0.05])
-            brightness = int(rng.integers(150, 255))
+            size = rng.choice([1, 2, 3], p=[0.7, 0.2, 0.1])
+            brightness = int(rng.integers(180, 255))
             cv2.circle(img, (x, y), int(size), (brightness, brightness, brightness), -1, cv2.LINE_AA)
             
-        # Add a "nebula" hint
-        cv2.GaussianBlur(img, (15, 15), 0, dst=img)
+        # Add some "nebula" clouds
+        for _ in range(5):
+            x, y = rng.integers(0, self.full_width), rng.integers(0, self.full_height)
+            cv2.circle(img, (x, y), 300, (30, 20, 45), -1)
+        
+        cv2.GaussianBlur(img, (51, 51), 0, dst=img)
+        
+        # Re-add sharp stars on top of the blurred nebula
+        for _ in range(800):
+            x, y = rng.integers(0, self.full_width), rng.integers(0, self.full_height)
+            brightness = int(rng.integers(200, 255))
+            cv2.circle(img, (x, y), 1, (brightness, brightness, brightness), -1)
         
         return img
 
@@ -113,12 +123,12 @@ class MockAstroRig(BaseAstroRig):
         # Crop from static starfield
         crop = self.static_starfield[cy:cy+self.height, cx:cx+self.width].copy()
         
-        # Add dynamic sensor noise
-        noise = np.random.normal(12, 5, (self.height, self.width, 3)).astype(np.uint8)
-        frame = cv2.addWeighted(crop, 1.0, noise, 0.5, 0)
+        # Add dynamic sensor noise (additive rather than weighted average)
+        noise = np.random.normal(5, 2, (self.height, self.width, 3)).astype(np.uint8)
+        frame = cv2.add(crop, noise)
 
-        cv2.putText(frame, f"MOCK DRIFT - {time.strftime('%H:%M:%S')}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
-        cv2.putText(frame, f"Speed: {self.current_duty:.1f}%", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 150, 0), 1)
+        cv2.putText(frame, f"MOCK DRIFT - {time.strftime('%H:%M:%S')}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.putText(frame, f"Speed: {self.current_duty:.1f}%", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         return frame
 
     def get_frame(self):
