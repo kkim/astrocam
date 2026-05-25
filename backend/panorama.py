@@ -102,6 +102,8 @@ class PanoramaManager:
                         # Accumulate drift into offsets
                         self.offset_x += dx
                         self.offset_y += dy
+                        if i % 5 == 0: # Log every 5 frames to avoid spamming
+                            event_logger.log(f"Auto-Align: dx={dx:.1f}, dy={dy:.1f} (Total: {self.offset_x:.1f}, {self.offset_y:.1f})")
                     elif not self.auto_align:
                         # Manual drift
                         self.offset_x += self.drift_step
