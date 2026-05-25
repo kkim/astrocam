@@ -151,10 +151,11 @@ def capture():
 class PanoramaUpdate(BaseModel):
     frames: int
     drift_step: float
+    auto_align: bool = False
 
 @app.post("/panorama/start")
 def start_panorama(req: PanoramaUpdate):
-    success = panorama.start(req.frames, req.drift_step)
+    success = panorama.start(req.frames, req.drift_step, req.auto_align)
     return {"success": success}
 
 @app.get("/panorama/status")

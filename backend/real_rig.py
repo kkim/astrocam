@@ -128,6 +128,11 @@ class RealAstroRig(BaseAstroRig):
             ret, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
             return jpeg.tobytes() if ret else None
 
+    def get_raw_frame(self):
+        with self.lock:
+            if self.latest_frame is None: return None
+            return self.latest_frame.copy()
+
     def set_camera_param(self, prop, value):
         mapping = {
             "brightness": cv2.CAP_PROP_BRIGHTNESS, "contrast": cv2.CAP_PROP_CONTRAST,

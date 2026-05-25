@@ -133,6 +133,11 @@ class MockAstroRig(BaseAstroRig):
                 return jpeg.tobytes()
             return None
 
+    def get_raw_frame(self):
+        with self.lock:
+            if self.latest_frame is None: return None
+            return self.latest_frame.copy()
+
     def set_camera_param(self, prop, value):
         with self.lock:
             if prop == "average":

@@ -6,40 +6,84 @@ import os
 from datetime import datetime
 from logger import event_logger
 
+class FrameAligner:
+    def __init__(self):
+        self.orb = cv2.ORB_create(nfeatures=1000)
+        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+
+    def get_translation(self, frame1, frame2):
+        """Estimate (dx, dy) translation between frame1 and frame2."""
+        # Convert to grayscale
+        gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
+
+        # Detect and compute
+        kp1, des1 = self.orb.detectAndCompute(gray1, None)
+        kp2, des2 = self.orb.detectAndCompute(gray2, None)
+
+        if des1 is None or des2 is None:
+            return 0.0, 0.0
+
+        # Match
+        matches = self.matcher.match(des1, des2)
+        if len(matches) < 10:
+            return 0.0, 0.0
+
+        # Extract coordinates of matched points
+        # dx = x2 - x1, dy = y2 - y1
+        dxs = []
+        dys = []
+        for m in matches:
+            p1 = kp1[m.queryIdx].pt
+            p2 = kp2[m.trainIdx].pt
+            dxs.append(p2[0] - p1[0])
+            dys.append(p2[1] - p1[1])
+
+        # Robust estimate using median
+        dx = np.median(dxs)
+        dy = np.median(dys)
+
+        return float(dx), float(dy)
+
 class PanoramaManager:
     def __init__(self, rig):
         self.rig = rig
         self.is_active = False
         self.total_frames = 0
         self.current_frame = 0
-        self.drift_step = 0.0 # pixels per frame
+        self.drift_step = 0.0 # manual pixels per frame
+        self.auto_align = False
         
         self.sum_buffer = None
         self.weight_buffer = None
         self.offset_x = 0.0
         self.offset_y = 0.0
         
+        self.aligner = FrameAligner()
+        self.prev_frame = None
+        
         self.lock = threading.Lock()
         self.thread = None
 
-    def start(self, frames, drift_step):
+    def start(self, frames, drift_step, auto_align=False):
         if self.is_active:
             return False
             
         self.total_frames = frames
         self.drift_step = drift_step
+        self.auto_align = auto_align
         self.current_frame = 0
         self.offset_x = 0.0
         self.offset_y = 0.0
         
-        # We don't know the exact size yet, will initialize on first frame
         self.sum_buffer = None
         self.weight_buffer = None
+        self.prev_frame = None
         
         self.is_active = True
         self.thread = threading.Thread(target=self._run_panorama, daemon=True)
         self.thread.start()
-        event_logger.log(f"Panorama started: {frames} frames, step {drift_step}px")
+        event_logger.log(f"Panorama started: {frames} frames, auto_align={auto_align}")
         return True
 
     def _run_panorama(self):
@@ -49,25 +93,35 @@ class PanoramaManager:
                     break
                 
                 # 1. Get raw frame from rig
-                # We need the full resolution frame, not the MJPEG stream bytes
-                # Let's assume rig.latest_frame is available via a new method or lock
-                frame = self.rig.latest_frame.copy() if self.rig.latest_frame is not None else None
+                frame = self.rig.get_raw_frame()
                 
                 if frame is not None:
+                    # 2. Alignment
+                    if self.auto_align and self.prev_frame is not None:
+                        dx, dy = self.aligner.get_translation(self.prev_frame, frame)
+                        # Accumulate drift into offsets
+                        self.offset_x += dx
+                        self.offset_y += dy
+                    elif not self.auto_align:
+                        # Manual drift
+                        self.offset_x += self.drift_step
+                    
+                    # 3. Accumulate
                     self._accumulate(frame)
                     self.current_frame += 1
+                    
+                    # Store current for next alignment
+                    self.prev_frame = frame
                 
-                # 2. Wait for drift to occur (simulate or real wait)
-                # In real life, we just wait. In mock, we rely on the motor speed.
-                # For simplicity, we assume the drift happens between frames.
-                time.sleep(0.5) # Allow some time for movement
-                
-                # Update expected offset
-                self.offset_x += self.drift_step
+                # In auto-align mode, we don't need a fixed sleep if we want maximum speed,
+                # but let's keep it to avoid overwhelming the CPU
+                time.sleep(0.5)
                 
             self._finalize()
         except Exception as e:
             event_logger.log(f"Panorama Error: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.is_active = False
 
@@ -75,29 +129,38 @@ class PanoramaManager:
         h, w = frame.shape[:2]
         
         # Initialize buffers if needed
-        # Buffers are large enough to hold total drift + 1 frame
         if self.sum_buffer is None:
-            max_drift = abs(self.drift_step * self.total_frames)
-            buf_w = w + int(max_drift) + 100
-            buf_h = h + 100
+            # For auto-align, we don't know the final size, so we'll start with a safe margin
+            # and grow if needed. For now, let's use a large buffer.
+            max_offset = 2000 # Default safe margin
+            if not self.auto_align:
+                max_offset = abs(self.drift_step * self.total_frames)
+            
+            buf_w = w + int(max_offset) + 200
+            buf_h = h + 400 # Allow some vertical drift
             self.sum_buffer = np.zeros((buf_h, buf_w, 3), dtype=np.float32)
             self.weight_buffer = np.zeros((buf_h, buf_w), dtype=np.float32)
-            # Center vertically, start at left
-            self.base_y = 50
-            self.base_x = 50 if self.drift_step >= 0 else int(max_drift) + 50
+            
+            self.base_y = 200
+            self.base_x = 100 if self.drift_step >= 0 else int(max_offset) + 100
 
         # Calculate current position on canvas
         curr_x = int(self.base_x + self.offset_x)
         curr_y = int(self.base_y + self.offset_y)
         
+        # Bounds checking
+        if curr_x < 0 or curr_y < 0 or curr_x + w > self.sum_buffer.shape[1] or curr_y + h > self.sum_buffer.shape[0]:
+            event_logger.log("Panorama Warning: Frame outside buffer bounds. Skipping.")
+            return
+
         # Accumulate into Sum
         self.sum_buffer[curr_y:curr_y+h, curr_x:curr_x+w] += frame.astype(np.float32)
-        
-        # Accumulate into Weight (weighted by center-weighted mask to avoid seams)
-        # For now, just a simple box weight
         self.weight_buffer[curr_y:curr_y+h, curr_x:curr_x+w] += 1.0
 
     def _finalize(self):
+        if self.sum_buffer is None:
+            return
+
         # Divide Sum by Weight
         mask = self.weight_buffer > 0
         result = np.zeros_like(self.sum_buffer, dtype=np.float32)
@@ -106,6 +169,14 @@ class PanoramaManager:
         # Convert to uint8
         final_img = np.clip(result, 0, 255).astype(np.uint8)
         
+        # Optional: Crop to content
+        gray = cv2.cvtColor(final_img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            x, y, w, h = cv2.boundingRect(np.concatenate(contours))
+            final_img = final_img[y:y+h, x:x+w]
+
         # Save result
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"panorama_{timestamp}.jpg"

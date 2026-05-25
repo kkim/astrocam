@@ -34,7 +34,7 @@ function App() {
   const [sequenceStatus, setSequenceStatus] = useState({ active: false, count: 0, total: 0 });
   const [sequenceConfig, setSequenceConfig] = useState({ count: 10, interval: 2 });
   const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0 });
-  const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0 });
+  const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0, auto_align: true });
   const logEndRef = React.useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState<{connected: boolean, mean_brightness: number, last_frame_time: number, width: number, height: number, fps: number}>({
     connected: true,
@@ -361,11 +361,24 @@ function App() {
                   <label>Drift Step (px)</label>
                   <input 
                     type="number" 
+                    disabled={panoramaConfig.auto_align}
                     value={panoramaConfig.drift_step} 
                     onChange={(e) => setPanoramaConfig(prev => ({ ...prev, drift_step: parseFloat(e.target.value) || 1 }))}
                   />
                 </div>
               </div>
+
+              <div className="control-group" style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={panoramaConfig.auto_align} 
+                    onChange={(e) => setPanoramaConfig(prev => ({ ...prev, auto_align: e.target.checked }))}
+                  />
+                  Auto Align (Feature Matching)
+                </label>
+              </div>
+
               <button className="start-seq-btn" style={{ backgroundColor: '#aa3bff' }} onClick={handleStartPanorama}>
                 <Zap size={16} /> Start Panorama
               </button>

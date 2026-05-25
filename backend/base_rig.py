@@ -6,6 +6,10 @@ class BaseAstroRig(ABC):
         pass
 
     @abstractmethod
+    def get_raw_frame(self):
+        pass
+
+    @abstractmethod
     def set_camera_param(self, prop, value):
         pass
 
