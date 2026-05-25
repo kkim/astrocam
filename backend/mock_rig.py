@@ -11,6 +11,8 @@ class MockAstroRig(BaseAstroRig):
     def __init__(self):
         self.width = 1920
         self.height = 1080
+        self.full_width = int(self.width * 1.5)
+        self.full_height = int(self.height * 1.5)
         self.n_avg = 1
         self.is_running = True
         self.lock = threading.Lock()
@@ -38,17 +40,41 @@ class MockAstroRig(BaseAstroRig):
         if not os.path.exists(self.sequence_info["directory"]):
             os.makedirs(self.sequence_info["directory"])
 
+        # Generate static starfield
+        self.static_starfield = self._generate_static_starfield()
+        self.start_time = time.time()
+
         # Main simulation thread
         self.latest_frame = None
         self.acc_frame = None
         self.thread = threading.Thread(target=self._sim_loop, daemon=True)
         self.thread.start()
 
+    def _generate_static_starfield(self):
+        # Dark background
+        img = np.zeros((self.full_height, self.full_width, 3), dtype=np.uint8)
+        
+        # Seed for consistent starfield
+        rng = np.random.default_rng(42)
+        
+        # Add thousands of stars
+        for _ in range(2000):
+            x = rng.integers(0, self.full_width)
+            y = rng.integers(0, self.full_height)
+            size = rng.choice([0, 1, 2], p=[0.8, 0.15, 0.05])
+            brightness = int(rng.integers(150, 255))
+            cv2.circle(img, (x, y), int(size), (brightness, brightness, brightness), -1, cv2.LINE_AA)
+            
+        # Add a "nebula" hint
+        cv2.GaussianBlur(img, (15, 15), 0, dst=img)
+        
+        return img
+
     def _sim_loop(self):
         while self.is_running:
             frame = self._generate_mock_frame()
             self._process_frame(frame)
-            time.sleep(0.033) # 30 FPS
+            time.sleep(0.04) # 25 FPS
 
     def _process_frame(self, frame):
         with self.lock:
@@ -64,27 +90,25 @@ class MockAstroRig(BaseAstroRig):
                 self.latest_frame = cv2.convertScaleAbs(self.acc_frame)
 
     def _generate_mock_frame(self):
-        # Background noise: mean 5%, std 5%
-        mean, std = 255 * 0.05, 255 * 0.05
-        noise = np.random.normal(mean, std, (self.height, self.width, 3)).astype(np.float32)
-        frame = np.clip(noise, 0, 255).astype(np.uint8)
-
-        np.random.seed(42)
-        # 100 stars r=0.5
-        for _ in range(100):
-            cv2.circle(frame, (np.random.randint(0, self.width), np.random.randint(0, self.height)), 0, (255, 255, 255), -1, cv2.LINE_AA)
-        # 20 stars r=1.0
-        for _ in range(20):
-            cv2.circle(frame, (np.random.randint(0, self.width), np.random.randint(0, self.height)), 1, (255, 255, 255), -1, cv2.LINE_AA)
-        # 10 stars r=1.5
-        for _ in range(10):
-            cv2.circle(frame, (np.random.randint(0, self.width), np.random.randint(0, self.height)), 2, (255, 255, 255), -1, cv2.LINE_AA)
-        # 2 stars r=2.0
-        for _ in range(2):
-            cv2.circle(frame, (np.random.randint(0, self.width), np.random.randint(0, self.height)), 3, (255, 255, 255), -1, cv2.LINE_AA)
-        np.random.seed(None)
+        # Period: 4 minutes (240 seconds)
+        period = 240.0
+        elapsed = time.time() - self.start_time
+        theta = (elapsed % period) / period * 2 * np.pi
         
-        cv2.putText(frame, f"MOCK RIG - {time.strftime('%H:%M:%S')}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+        # Path: Circular/Elliptical crop offsets
+        # Max horizontal slack is 0.5 * width. Center of slack is 0.25 * width.
+        # Starting at top center means theta=0 -> x=0.25W, y=0
+        cx = int(self.width * 0.25 + self.width * 0.25 * np.sin(theta))
+        cy = int(self.height * 0.25 - self.height * 0.25 * np.cos(theta))
+        
+        # Crop from static starfield
+        crop = self.static_starfield[cy:cy+self.height, cx:cx+self.width].copy()
+        
+        # Add dynamic sensor noise
+        noise = np.random.normal(12, 5, (self.height, self.width, 3)).astype(np.uint8)
+        frame = cv2.addWeighted(crop, 1.0, noise, 0.5, 0)
+
+        cv2.putText(frame, f"MOCK DRIFT - {time.strftime('%H:%M:%S')}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
         return frame
 
     def get_frame(self):
