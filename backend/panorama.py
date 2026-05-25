@@ -194,7 +194,9 @@ class PanoramaManager:
             "active": self.is_active,
             "current": self.current_frame,
             "total": self.total_frames,
-            "progress": (self.current_frame / self.total_frames * 100) if self.total_frames > 0 else 0
+            "progress": (self.current_frame / self.total_frames * 100) if self.total_frames > 0 else 0,
+            "offset_x": round(self.offset_x, 1),
+            "offset_y": round(self.offset_y, 1)
         }
 
     def stop(self):

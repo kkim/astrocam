@@ -33,7 +33,7 @@ function App() {
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [sequenceStatus, setSequenceStatus] = useState({ active: false, count: 0, total: 0 });
   const [sequenceConfig, setSequenceConfig] = useState({ count: 10, interval: 2 });
-  const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0 });
+  const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0, offset_x: 0, offset_y: 0 });
   const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0, auto_align: true });
   const logEndRef = React.useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState<{connected: boolean, mean_brightness: number, last_frame_time: number, width: number, height: number, fps: number}>({
@@ -336,6 +336,9 @@ function App() {
           {panoramaStatus.active ? (
             <div className="sequence-progress">
               <div className="progress-text">Processing: {panoramaStatus.current} / {panoramaStatus.total}</div>
+              <div className="progress-text" style={{ fontSize: '10px', color: '#8b949e', marginBottom: '8px' }}>
+                Shift: X: {panoramaStatus.offset_x}px, Y: {panoramaStatus.offset_y}px
+              </div>
               <div className="progress-bar-bg">
                 <div 
                   className="progress-bar-fill" 
