@@ -8,26 +8,36 @@ from logger import event_logger
 
 class FrameAligner:
     def __init__(self):
-        self.orb = cv2.ORB_create(nfeatures=2000) # Increase features for stars
-        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        self.orb = cv2.ORB_create(nfeatures=2000)
+        # Use FLANN or BFMatcher with KNN for ratio test
+        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
 
     def get_translation(self, frame1, frame2):
-        """Estimate (dx, dy) translation between frame1 and frame2 using RANSAC."""
+        """Estimate (dx, dy) translation using RANSAC and Ratio Test."""
         gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
         gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
 
         kp1, des1 = self.orb.detectAndCompute(gray1, None)
         kp2, des2 = self.orb.detectAndCompute(gray2, None)
 
-        if des1 is None or des2 is None or len(kp1) < 4 or len(kp2) < 4:
+        if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
             return 0.0, 0.0
 
-        matches = self.matcher.match(des1, des2)
-        if len(matches) < 4:
+        # KNN Match for Ratio Test
+        matches = self.matcher.knnMatch(des1, des2, k=2)
+        
+        good_matches = []
+        for m_n in matches:
+            if len(m_n) == 2:
+                m, n = m_n
+                if m.distance < 0.7 * n.distance:
+                    good_matches.append(m)
+        
+        if len(good_matches) < 4:
             return 0.0, 0.0
 
-        src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
 
         # RANSAC for translation
         M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 3.0)
@@ -38,7 +48,14 @@ class FrameAligner:
             dys = [dst_pts[i][0][1] - src_pts[i][0][1] for i, m in enumerate(inliers_mask) if m]
             
             if len(dxs) >= 4:
-                return float(np.median(dxs)), float(np.median(dys))
+                dx = float(np.median(dxs))
+                dy = float(np.median(dys))
+                
+                # Sanity Check: If jump is > 50px, it's almost certainly a false match in our rig
+                if abs(dx) > 50 or abs(dy) > 50:
+                    return 0.0, 0.0
+                    
+                return dx, dy
 
         return 0.0, 0.0
 
@@ -50,7 +67,6 @@ class PanoramaManager:
         self.current_frame = 0
         self.drift_step = 0.0
         self.auto_align = False
-        
         self.sum_buffer = None
         self.weight_buffer = None
         self.offset_x = 0.0
@@ -82,9 +98,11 @@ class PanoramaManager:
                 if frame is not None:
                     if self.auto_align and self.prev_frame is not None:
                         dx, dy = self.aligner.get_translation(self.prev_frame, frame)
+                        # We only update if we got a valid non-zero match, 
+                        # or we can just accept 0 if the star actually didn't move.
+                        # But we definitely want to avoid the "big jumps".
                         self.offset_x -= dx
                         self.offset_y -= dy
-                        # Log every frame for debugging
                         event_logger.log(f"F{i} dx={dx:.1f} TotalX={self.offset_x:.1f}")
                     elif not self.auto_align:
                         self.offset_x += self.drift_step
