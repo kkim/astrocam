@@ -17,14 +17,8 @@ interface Controls {
 
 function App() {
   const [controls, setControls] = useState<Controls>({
-    brightness: 128,
-    contrast: 32,
-    saturation: 64,
-    gain: 0,
-    exposure: 156,
-    sharpness: 2,
-    average: 1,
-    auto_exposure: 0
+    brightness: 128, contrast: 32, saturation: 64, gain: 0,
+    exposure: 156, sharpness: 2, average: 1, auto_exposure: 0
   });
   const [status, setStatus] = useState<string>('Ready');
   const [logs, setLogs] = useState<string[]>([]);
@@ -45,14 +39,34 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
-    const fetchData = () => {
-      fetch(`${API_BASE}/status`).then(res => res.json()).then(setHealth).catch(() => {});
-      fetch(`${API_BASE}/controls`).then(res => res.json()).then(setControls).catch(() => {});
-      fetch(`${API_BASE}/motor/status`).then(res => res.json()).then(data => { if (!isAdjustingMotor) setMotorStatus(data); }).catch(() => {});
-      fetch(`${API_BASE}/panorama/status`).then(res => res.json()).then(setPanoramaStatus).catch(() => {});
-      fetch(`${API_BASE}/logs`).then(res => res.json()).then(setLogs).catch(() => {});
-      fetch(`${API_BASE}/captures/list`).then(res => res.json()).then(setCaptures).catch(() => {});
-      fetch(`${API_BASE}/rig`).then(res => res.json()).then(data => setRigMode(data.mode)).catch(() => {});
+    const fetchData = async () => {
+      try {
+        const hRes = await fetch(`${API_BASE}/status`);
+        if (hRes.ok) setHealth(await hRes.json());
+
+        const cRes = await fetch(`${API_BASE}/controls`);
+        if (cRes.ok) setControls(await cRes.json());
+
+        const mRes = await fetch(`${API_BASE}/motor/status`);
+        if (mRes.ok && !isAdjustingMotor) setMotorStatus(await mRes.json());
+
+        const pRes = await fetch(`${API_BASE}/panorama/status`);
+        if (pRes.ok) setPanoramaStatus(await pRes.json());
+
+        const lRes = await fetch(`${API_BASE}/logs`);
+        if (lRes.ok) setLogs(await lRes.json());
+
+        const capRes = await fetch(`${API_BASE}/captures/list`);
+        if (capRes.ok) setCaptures(await capRes.json());
+
+        const rRes = await fetch(`${API_BASE}/rig`);
+        if (rRes.ok) {
+            const data = await rRes.json();
+            setRigMode(data.mode);
+        }
+      } catch (err) {
+        console.error("Fetch error:", err);
+      }
     };
 
     fetchData();
@@ -70,7 +84,7 @@ function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ property: prop, value: val })
-    });
+    }).catch(e => console.error(e));
   };
 
   const updateMotorSpeed = (speed: number) => {
@@ -80,7 +94,8 @@ function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ speed })
-    });
+    }).catch(e => console.error(e));
+
     const timeoutId = (window as any).motorTimeout;
     if (timeoutId) clearTimeout(timeoutId);
     (window as any).motorTimeout = setTimeout(() => setIsAdjustingMotor(false), 2000);
@@ -97,7 +112,7 @@ function App() {
         setRigMode(data.mode);
         setStatus(`Rig set to ${data.mode}`);
       }
-    });
+    }).catch(e => setStatus(`Error: ${e.message}`));
   };
 
   const handleCapture = () => {
@@ -109,7 +124,7 @@ function App() {
           setStatus(`Saved: ${data.filename}`);
           setTimeout(() => setStatus('Ready'), 3000);
         }
-      });
+      }).catch(e => setStatus(`Error: ${e.message}`));
   };
 
   const handleStartPanorama = () => {
@@ -118,7 +133,7 @@ function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(panoramaConfig)
-    });
+    }).catch(e => setStatus(`Error: ${e.message}`));
   };
 
   return (
@@ -138,8 +153,8 @@ function App() {
         <div className="stream-container">
           <img src={`${API_BASE}/stream`} alt="Live Stream" className="video-preview" />
           <div className="stream-overlay">
-            <span>{health.width}x{health.height} @ {health.fps.toFixed(1)} FPS</span>
-            <span>Luminance: {health.mean_brightness.toFixed(1)}</span>
+            <span>{health.width || 0}x{health.height || 0} @ {(health.fps || 0).toFixed(1)} FPS</span>
+            <span>Luminance: {(health.mean_brightness || 0).toFixed(1)}</span>
           </div>
         </div>
 
@@ -147,7 +162,7 @@ function App() {
           <section className="log-container">
             <div className="panel-header"><Terminal size={14} /> System Logs</div>
             <div className="log-window">
-              {(logs || []).map((log, i) => <div key={i} className="log-entry">{log}</div>)}
+              {Array.isArray(logs) && logs.map((log, i) => <div key={i} className="log-entry">{log}</div>)}
               <div ref={logEndRef} />
             </div>
           </section>
@@ -155,10 +170,10 @@ function App() {
           <section className="captures-container">
             <div className="panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Grid size={14} /> Gallery</div>
-              <span className="count-badge">{(captures || []).length}</span>
+              <span className="count-badge">{Array.isArray(captures) ? captures.length : 0}</span>
             </div>
             <div className="captures-grid">
-              {(captures || []).length === 0 ? (
+              {!Array.isArray(captures) || captures.length === 0 ? (
                 <div className="empty-msg">No images captured</div>
               ) : (
                 captures.map(file => (
@@ -184,8 +199,8 @@ function App() {
           <div className="control-section">
             <div className="section-header"><Zap size={16} /> Mount</div>
             <div className="control-group">
-              <label>Duty Cycle: {motorStatus.duty_cycle.toFixed(1)}%</label>
-              <input type="range" min="0" max="100" step="0.2" value={motorStatus.duty_cycle} onChange={(e) => updateMotorSpeed(parseFloat(e.target.value))} />
+              <label>Duty Cycle: {(motorStatus.duty_cycle || 0).toFixed(1)}%</label>
+              <input type="range" min="0" max="100" step="0.2" value={motorStatus.duty_cycle || 0} onChange={(e) => updateMotorSpeed(parseFloat(e.target.value))} />
               <div className="preset-row">
                 <button onClick={() => updateMotorSpeed(85.0)}>Sidereal</button>
                 <button onClick={() => updateMotorSpeed(0)}>Stop</button>
@@ -198,11 +213,11 @@ function App() {
             {panoramaStatus.active ? (
               <div className="progress-container">
                 <div className="progress-info">
-                  <span>{panoramaStatus.current}/{panoramaStatus.total} frames</span>
-                  <span>Shift: {panoramaStatus.offset_x}px</span>
+                  <span>{panoramaStatus.current || 0}/{panoramaStatus.total || 0} frames</span>
+                  <span>Shift: {(panoramaStatus.offset_x || 0).toFixed(0)}px</span>
                 </div>
                 <div className="progress-bar-bg">
-                  <div className="progress-bar-fill" style={{ width: `${panoramaStatus.progress}%` }}></div>
+                  <div className="progress-bar-fill" style={{ width: `${panoramaStatus.progress || 0}%` }}></div>
                 </div>
               </div>
             ) : (
@@ -210,7 +225,7 @@ function App() {
                 <div className="config-row">
                   <div className="field">
                     <label>Frames</label>
-                    <input type="number" value={panoramaConfig.frames} onChange={e => setPanoramaConfig(p => ({...p, frames: parseInt(e.target.value)}))} />
+                    <input type="number" value={panoramaConfig.frames} onChange={e => setPanoramaConfig(p => ({...p, frames: parseInt(e.target.value) || 1}))} />
                   </div>
                   <div className="field">
                     <label>Auto-Align</label>
@@ -224,14 +239,14 @@ function App() {
 
           <div className="control-section">
             <div className="section-header"><RefreshCw size={16} /> Camera Settings</div>
-            {Object.entries(controls).map(([key, value]) => (
+            {Object.entries(controls || {}).map(([key, value]) => (
               <div key={key} className="control-group">
                 <label>{key}: {value}</label>
                 <input 
                   type="range" 
                   min={key === 'average' ? 1 : 0} 
                   max={key === 'exposure' ? 1000 : 255} 
-                  value={value} 
+                  value={value || 0} 
                   onChange={e => updateControl(key, parseInt(e.target.value))} 
                 />
               </div>
