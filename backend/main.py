@@ -31,12 +31,12 @@ if not os.path.exists("../captures"):
 # Mount captures for viewing
 app.mount("/captures", StaticFiles(directory="../captures"), name="captures")
 
-@app.get("/captures/list")
+@app.get("/gallery")
 def list_captures():
     files = glob.glob("../captures/*.jpg")
     # Sort by modification time (newest first)
     files.sort(key=os.path.getmtime, reverse=True)
-    return [os.path.basename(f) for f in files[:10]] # Return latest 10
+    return [os.path.basename(f) for f in files[:20]] # Return latest 20
 
 # Unified AstroRig
 rig_mode = "real" # Try real by default

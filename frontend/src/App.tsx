@@ -56,7 +56,7 @@ function App() {
         const lRes = await fetch(`${API_BASE}/logs`);
         if (lRes.ok) setLogs(await lRes.json());
 
-        const capRes = await fetch(`${API_BASE}/captures/list`);
+        const capRes = await fetch(`${API_BASE}/gallery`);
         if (capRes.ok) setCaptures(await capRes.json());
 
         const rRes = await fetch(`${API_BASE}/rig`);
