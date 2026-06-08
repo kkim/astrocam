@@ -57,6 +57,7 @@ def set_rig_mode(update: RigUpdate):
     
     rig_mode = update.mode
     rig = get_astro_rig(rig_mode, 0, 18)
+    panorama.rig = rig
     return {"success": True, "mode": rig_mode}
 
 @app.get("/logs")
