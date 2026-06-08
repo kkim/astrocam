@@ -12,7 +12,7 @@ class FrameAligner:
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
     def get_translation(self, frame1, frame2):
-        """Estimate (dx, dy) translation between frame1 and frame2."""
+        """Estimate (dx, dy) translation between frame1 and frame2 using RANSAC."""
         # Convert to grayscale
         gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
         gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
@@ -21,29 +21,39 @@ class FrameAligner:
         kp1, des1 = self.orb.detectAndCompute(gray1, None)
         kp2, des2 = self.orb.detectAndCompute(gray2, None)
 
-        if des1 is None or des2 is None:
+        if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
             return 0.0, 0.0
 
-        # Match
+        # Match using BFMatcher
         matches = self.matcher.match(des1, des2)
         if len(matches) < 10:
             return 0.0, 0.0
 
-        # Extract coordinates of matched points
-        # dx = x2 - x1, dy = y2 - y1
-        dxs = []
-        dys = []
-        for m in matches:
-            p1 = kp1[m.queryIdx].pt
-            p2 = kp2[m.trainIdx].pt
-            dxs.append(p2[0] - p1[0])
-            dys.append(p2[1] - p1[1])
+        # Extract coordinates
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
 
-        # Robust estimate using median
-        dx = np.median(dxs)
-        dy = np.median(dys)
+        # Use RANSAC to find the translation
+        # Even if we only want translation, findHomography with RANSAC is great at filtering
+        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        
+        if M is not None:
+            # For translation, we can just look at the last column of the matrix
+            # Or better, take the median of the INLIER matches
+            inliers_mask = mask.ravel().tolist()
+            dxs = []
+            dys = []
+            for i, is_inlier in enumerate(inliers_mask):
+                if is_inlier:
+                    p1 = src_pts[i][0]
+                    p2 = dst_pts[i][0]
+                    dxs.append(p2[0] - p1[0])
+                    dys.append(p2[1] - p1[1])
+            
+            if len(dxs) > 0:
+                return float(np.median(dxs)), float(np.median(dys))
 
-        return float(dx), float(dy)
+        return 0.0, 0.0
 
 class PanoramaManager:
     def __init__(self, rig):
