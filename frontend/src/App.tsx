@@ -26,7 +26,7 @@ function App() {
   const [rigMode, setRigMode] = useState<string>('mock');
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
-  const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0, offset_x: 0, offset_y: 0 });
+  const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0, offset_x: 0, offset_y: 0, offset_angle: 0 });
   const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0, auto_align: true });
   const [health, setHealth] = useState({
     connected: true,
@@ -219,7 +219,7 @@ function App() {
               <div className="progress-container">
                 <div className="progress-info">
                   <span>{panoramaStatus.current || 0}/{panoramaStatus.total || 0} frames</span>
-                  <span>Shift: {(panoramaStatus.offset_x || 0).toFixed(0)}px</span>
+                  <span>X: {(panoramaStatus.offset_x || 0).toFixed(0)}px, Rot: {(panoramaStatus.offset_angle || 0).toFixed(2)}°</span>
                 </div>
                 <div className="progress-bar-bg">
                   <div className="progress-bar-fill" style={{ width: `${panoramaStatus.progress || 0}%` }}></div>
