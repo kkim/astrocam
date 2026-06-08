@@ -62,15 +62,17 @@ class MockAstroRig(BaseAstroRig):
         # Seed for consistent starfield
         rng = np.random.default_rng(42)
         
-        # Add thousands of SHARP stars (size 0 or 1)
+        # Add thousands of SHARP stars with varied sizes
         for _ in range(5000):
             x = rng.integers(0, self.full_width)
             y = rng.integers(0, self.full_height)
-            # Most stars are tiny dots (size 0)
-            size = rng.choice([0, 1], p=[0.9, 0.1])
+            
+            # Size mapping: 1px->rad 0, 2px->rad 1, 3px->rad 2, 5px->rad 4
+            size = rng.choice([0, 1, 2, 4], p=[0.9, 0.09, 0.009, 0.001])
             brightness = int(rng.integers(150, 255))
+            
             # Grayscale stars
-            cv2.circle(img, (x, y), size, (brightness, brightness, brightness), -1)
+            cv2.circle(img, (x, y), int(size), (brightness, brightness, brightness), -1)
             
         return img
 
