@@ -177,7 +177,7 @@ function App() {
                 <div className="empty-msg">No images captured</div>
               ) : (
                 captures.map(file => (
-                  <div key={file} className="capture-item" onClick={() => window.open(`${API_BASE}/captures/${file}`, '_blank')}>
+                  <div key={file} className="capture-item" title={file} onClick={() => window.open(`${API_BASE}/captures/${file}`, '_blank')}>
                     <img src={`${API_BASE}/captures/${file}`} alt={file} loading="lazy" />
                     <div className="capture-label">{file}</div>
                   </div>

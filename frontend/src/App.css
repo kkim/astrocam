@@ -187,6 +187,13 @@ body, html, #root {
 .capture-item:hover {
   transform: translateY(-2px);
   border-color: var(--accent);
+  background: var(--bg-panel);
+}
+
+.capture-item:hover .capture-label {
+  color: var(--text-primary);
+  white-space: normal;
+  word-break: break-all;
 }
 
 .capture-item img {
