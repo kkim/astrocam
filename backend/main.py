@@ -9,10 +9,13 @@ from datetime import datetime
 from astro_rig import get_astro_rig
 from logger import event_logger
 from panorama import PanoramaManager
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import glob
 
 app = FastAPI()
 
+# ... existing CORS middleware ...
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,6 +23,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Ensure captures directory exists
+if not os.path.exists("../captures"):
+    os.makedirs("../captures")
+
+# Mount captures for viewing
+app.mount("/captures", StaticFiles(directory="../captures"), name="captures")
+
+@app.get("/captures/list")
+def list_captures():
+    files = glob.glob("../captures/*.jpg")
+    # Sort by modification time (newest first)
+    files.sort(key=os.path.getmtime, reverse=True)
+    return [os.path.basename(f) for f in files[:10]] # Return latest 10
 
 # Unified AstroRig
 rig_mode = "real" # Try real by default
