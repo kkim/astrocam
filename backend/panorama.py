@@ -99,9 +99,9 @@ class PanoramaManager:
                     # 2. Alignment
                     if self.auto_align and self.prev_frame is not None:
                         dx, dy = self.aligner.get_translation(self.prev_frame, frame)
-                        # Accumulate drift into offsets
-                        self.offset_x += dx
-                        self.offset_y += dy
+                        # Subtract observed star motion to get camera motion
+                        self.offset_x -= dx
+                        self.offset_y -= dy
                         if i % 5 == 0: # Log every 5 frames to avoid spamming
                             event_logger.log(f"Auto-Align: dx={dx:.1f}, dy={dy:.1f} (Total: {self.offset_x:.1f}, {self.offset_y:.1f})")
                     elif not self.auto_align:
@@ -114,6 +114,8 @@ class PanoramaManager:
                     
                     # Store current for next alignment
                     self.prev_frame = frame
+                else:
+                    event_logger.log(f"Panorama Warning: Frame {i} is None")
                 
                 # In auto-align mode, we don't need a fixed sleep if we want maximum speed,
                 # but let's keep it to avoid overwhelming the CPU
@@ -132,19 +134,16 @@ class PanoramaManager:
         
         # Initialize buffers if needed
         if self.sum_buffer is None:
-            # For auto-align, we don't know the final size, so we'll start with a safe margin
-            # and grow if needed. For now, let's use a large buffer.
-            max_offset = 2000 # Default safe margin
-            if not self.auto_align:
-                max_offset = abs(self.drift_step * self.total_frames)
-            
-            buf_w = w + int(max_offset) + 200
-            buf_h = h + 400 # Allow some vertical drift
+            # Create a very large buffer to accommodate drift in any direction
+            # For 1080p, we allow up to 4x width and 2x height for the panorama
+            buf_w = w * 4
+            buf_h = h * 2
             self.sum_buffer = np.zeros((buf_h, buf_w, 3), dtype=np.float32)
             self.weight_buffer = np.zeros((buf_h, buf_w), dtype=np.float32)
             
-            self.base_y = 200
-            self.base_x = 100 if self.drift_step >= 0 else int(max_offset) + 100
+            # Start in the middle-left
+            self.base_x = w # 1 frame width margin on the left
+            self.base_y = h // 2 # 0.5 frame height margin on top
 
         # Calculate current position on canvas
         curr_x = int(self.base_x + self.offset_x)
@@ -161,9 +160,10 @@ class PanoramaManager:
 
     def _finalize(self):
         if self.sum_buffer is None:
+            event_logger.log("Panorama Error: No frames were accumulated")
             return
 
-        # Divide Sum by Weight
+        event_logger.log(f"Panorama Finalizing: {self.current_frame} frames accumulated")
         mask = self.weight_buffer > 0
         result = np.zeros_like(self.sum_buffer, dtype=np.float32)
         result[mask] = self.sum_buffer[mask] / self.weight_buffer[mask][:, np.newaxis]
