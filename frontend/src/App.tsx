@@ -28,7 +28,6 @@ function App() {
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0, offset_x: 0, offset_y: 0 });
   const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0, auto_align: true });
-  const logEndRef = useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState({
     connected: true,
     mean_brightness: 0,
@@ -37,6 +36,7 @@ function App() {
     fps: 0
   });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const logWindowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -75,7 +75,13 @@ function App() {
   }, [isAdjustingMotor]);
 
   useEffect(() => {
-    if (logEndRef.current) logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (logWindowRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = logWindowRef.current;
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+      if (isNearBottom) {
+        logWindowRef.current.scrollTop = scrollHeight;
+      }
+    }
   }, [logs]);
 
   const updateControl = (prop: string, val: number) => {
@@ -161,9 +167,8 @@ function App() {
         <div className="layout-grid">
           <section className="log-container">
             <div className="panel-header"><Terminal size={14} /> System Logs</div>
-            <div className="log-window">
+            <div className="log-window" ref={logWindowRef}>
               {Array.isArray(logs) && logs.map((log, i) => <div key={i} className="log-entry">{log}</div>)}
-              <div ref={logEndRef} />
             </div>
           </section>
 
