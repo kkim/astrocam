@@ -12,6 +12,7 @@ from panorama import PanoramaManager
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import glob
+import json
 
 app = FastAPI()
 
@@ -38,8 +39,29 @@ def list_captures():
     files.sort(key=os.path.getmtime, reverse=True)
     return [os.path.basename(f) for f in files[:20]] # Return latest 20
 
+# Configuration persistence
+CONFIG_PATH = "config.json"
+
+def load_config():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            event_logger.log(f"Error loading config: {e}")
+    return {"rig_mode": "real"}
+
+def save_config(config_data):
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(config_data, f)
+    except Exception as e:
+        event_logger.log(f"Error saving config: {e}")
+
+config = load_config()
+
 # Unified AstroRig
-rig_mode = "real" # Try real by default
+rig_mode = config.get("rig_mode", "real")
 rig = get_astro_rig(rig_mode, 0, 18)
 panorama = PanoramaManager(rig)
 
@@ -73,6 +95,8 @@ def set_rig_mode(update: RigUpdate):
         rig.close()
     
     rig_mode = update.mode
+    save_config({"rig_mode": rig_mode})
+    
     rig = get_astro_rig(rig_mode, 0, 18)
     panorama.rig = rig
     return {"success": True, "mode": rig_mode}

@@ -312,6 +312,10 @@ input[type="number"] {
   background: var(--accent-purple);
 }
 
+.btn-primary.danger {
+  background: var(--danger);
+}
+
 .rig-toggle {
   display: flex;
   background: var(--bg-dark);

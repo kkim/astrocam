@@ -142,6 +142,14 @@ function App() {
     }).catch(e => setStatus(`Error: ${e.message}`));
   };
 
+  const handleStopPanorama = () => {
+    setStatus('Stopping panorama...');
+    fetch(`${API_BASE}/panorama/stop`, {
+      method: 'POST'
+    }).then(() => setStatus('Ready'))
+      .catch(e => setStatus(`Error: ${e.message}`));
+  };
+
   return (
     <div className={`app-container ${isSidebarOpen ? 'sidebar-open' : ''}`}>
       <button className="mobile-toggle" onClick={() => setIsSidebarOpen(!isSidebarOpen)}>
@@ -224,6 +232,13 @@ function App() {
                 <div className="progress-bar-bg">
                   <div className="progress-bar-fill" style={{ width: `${panoramaStatus.progress || 0}%` }}></div>
                 </div>
+                <button 
+                  className="btn-primary danger" 
+                  onClick={handleStopPanorama} 
+                  style={{ marginTop: '10px' }}
+                >
+                  Stop Panorama
+                </button>
               </div>
             ) : (
               <div className="panorama-config">

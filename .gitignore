@@ -28,3 +28,6 @@ Thumbs.db
 # Captures
 captures/
 .aider*
+
+# Local Config
+backend/config.json
