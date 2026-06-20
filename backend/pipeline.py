@@ -19,9 +19,9 @@ class AstroPipeline:
        reference frame using Star Neighborhood Descriptors to detect camera drift.
     3. Auto-Tracking Calibration: Solves the sensor-to-mount coordinate transformation
        and gain vector g (how star velocity responds to motor duty cycle u) using a 
-       controlled nudge sequence, completely independent of the PD controller.
+       continuous rolling estimator, running in parallel with the PD controller.
     4. Closed-loop PD Guiding: Projects the measured drift and velocity errors onto the
-       learned calibration vector to calculate proportional and derivative duty cycle
+       estimated calibration vector to calculate proportional and derivative duty cycle
        corrections, driving drift to zero.
     5. Capture & Sequence Management: Orchestrates manual captures and automated sequences
        saved directly to the local captures directory.
@@ -45,34 +45,27 @@ class AstroPipeline:
             history_d.append(d_k)
             calib_updates += 1
             
-            if state is "learning":
-                W = 5 # response delay in steps
-                if calib_updates == W:
-                    # Apply initial +5.0% nudge
-                    apply_motor_duty(u0 + 5.0%)
-                elif calib_updates >= 2 * W:
-                    # Compute displacement change over W steps (nudged vs baseline)
-                    delta_d_curr = d_k - d_mid
-                    delta_d_prev = d_mid - d_prev
-                    delta_u = u_curr - u_prev
-                    
-                    # Calculate mount response gain vector (scaled to step-level)
+            # Apply initial nudge of +5.0% on step 0
+            if calib_updates == 0:
+                apply_motor_duty(u0 + 5.0%)
+                
+            W = 5 # response delay in steps
+            if calib_updates >= 2 * W:
+                # Compute displacement change over W steps (nudged vs baseline)
+                delta_d_curr = d_k - d_mid
+                delta_d_prev = d_mid - d_prev
+                delta_u = u_curr - u_prev
+                
+                # Update calibration gain vector if signal is strong
+                if abs(delta_u) > 1.0%:
                     self.calib_g = ((delta_d_curr - delta_d_prev) / delta_u) / W
-                    restore_motor_duty(u0)
-                    
-                    # Reset tracking error to zero
-                    self.ref_frame = frame
-                    d_k = [0, 0]
-                    v_k = [0, 0]
-                    
-                    state = "converged"
-            else:
-                # Active Closed-Loop PD Guiding
-                d_ra = dot(d_k, g) / |g|^2
-                v_ra = dot(v_k, g) / |g|^2
-                u_correction = - Kp * d_ra - Kd * v_ra
-                u_correction = clip(u_correction, -1.5%, 1.5%)
-                apply_motor_duty(current_duty + u_correction)
+            
+            # Active Closed-Loop PD Guiding
+            d_ra = dot(d_k, g) / |g|^2
+            v_ra = dot(v_k, g) / |g|^2
+            u_correction = - Kp * d_ra - Kd * v_ra
+            u_correction = clip(u_correction, -1.5%, 1.5%)
+            apply_motor_duty(current_duty + u_correction)
                 
             last_d = d_k
     """
@@ -106,7 +99,7 @@ class AstroPipeline:
         self.ra_drift = 0.0
         self.dec_drift = 0.0
         self.calib_g = np.array([0.2, 0.0]) # default guess
-        self.calib_state = "learning"
+        self.calib_state = "calibrating"
         self.last_tracking_time = 0.0
         self.last_u = 0.0
         self.last_d = np.array([0.0, 0.0])
@@ -229,7 +222,7 @@ class AstroPipeline:
                 self.ref_frame = None
                 self.tracking_status = "calibrating"
                 self.calib_g = np.array([0.2, 0.0])
-                self.calib_state = "learning"
+                self.calib_state = "calibrating"
                 self.last_tracking_time = 0.0
                 self.calib_u0 = self.rig.current_duty
                 self.calib_updates = 0
@@ -288,17 +281,15 @@ class AstroPipeline:
         """
         Executes the closed-loop tracking control step. 
         
-        This method utilizes a continuous rolling buffer of history to calibrate the mount response:
-        1. For the first W=5 steps, the mount tracks at baseline u0.
-        2. At W=5 steps, a nudge of +5.0% is applied to excite the system.
-        3. After 2*W=10 steps, we calculate the gain vector g based on the displacement difference
-           between the nudged and baseline phases, scaled to the step-level.
-        4. We reset the reference frame to the current frame to zero out the accumulation error, 
-           and transition to 'converged' tracking mode.
-           
-        During the 'tracking' phase, we run a critically-damped Proportional-Derivative (PD) controller:
-           u_correction = - Kp * (d_k . g / |g|^2) - Kd * (v_k . g / |g|^2)
-        and sends the adjusted speed command to the mount rig.
+        This method utilizes a state-free continuous update mechanism:
+        1. On step 0, locks the tracking reference frame and applies an initial nudge 
+           of +5.0% to excite the system.
+        2. On every subsequent step (interval >= 1.5s), measures camera drift using 
+           sub-pixel translation alignment.
+        3. Updates the calibration gain vector g continuously based on a W-step delay 
+           window difference whenever the change in duty cycle exceeds 1.0%.
+        4. Applies a critically-damped Proportional-Derivative (PD) control correction 
+           directly to the mount motor speed continuously from step 1.
         
         This method checks and locks the tracking timestamp immediately upon entry to prevent
         duplicate executions from fast-arriving frames.
@@ -318,11 +309,11 @@ class AstroPipeline:
                 self.last_d = np.array([0.0, 0.0])
                 self.last_v = np.array([0.0, 0.0])
                 self.tracking_drift = [0.0, 0.0]
-                self.calib_state = "learning"
                 self.calib_updates = 0
                 self.history_u = [self.rig.current_duty]
                 self.history_d = [np.array([0.0, 0.0])]
-                event_logger.log("Calibration started. Tracking reference frame locked.")
+                self.calib_u0 = self.rig.current_duty
+                event_logger.log(f"Auto-tracking started (continuous). Tracking reference locked at {self.calib_u0}%.")
                 return
 
             dt = now - self.last_tracking_time
@@ -351,79 +342,67 @@ class AstroPipeline:
             self.history_d.append(d_k)
             self.calib_updates += 1
 
-            if self.calib_state == "learning":
-                W = 5 # response delay in steps
-                if self.calib_updates == W:
-                    # Apply initial nudge of +5.0%
-                    nudge = 5.0
-                    new_duty = np.clip(self.calib_u0 + nudge, 0.0, 100.0)
-                    self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
-                    event_logger.log(f"Calibration nudge of +{nudge}% applied (target {new_duty}%). Waiting {W} steps...")
-                elif self.calib_updates >= 2 * W:
-                    # Compute displacement change during the last W steps (nudged phase)
-                    d_curr = self.history_d[-1]
-                    d_mid = self.history_d[-W-1]
-                    d_prev = self.history_d[-2*W-1]
+            W = 5 # response delay window
+            
+            # Apply nudge of +5% at step W to excite the system
+            if self.calib_updates == W:
+                new_duty = np.clip(self.rig.current_duty + 5.0, 0.0, 100.0)
+                self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
+                event_logger.log(f"Calibration nudge of +5.0% applied at step {W} (target {new_duty}%).")
+
+            # Continuous update of calib_g if we have enough history
+            if self.calib_updates >= 2 * W:
+                d_curr = self.history_d[-1]
+                d_mid = self.history_d[-W-1]
+                d_prev = self.history_d[-2*W-1]
+                
+                delta_d_curr = d_curr - d_mid
+                delta_d_prev = d_mid - d_prev
+                
+                u_curr = self.history_u[-1]
+                u_prev = self.history_u[-2*W-1]
+                delta_u = u_curr - u_prev
+                
+                # Only update when we have a strong signal (delta_u > 1.0%)
+                if abs(delta_u) > 1.0:
+                    self.calib_g = ((delta_d_curr - delta_d_prev) / delta_u) / W
                     
-                    delta_d_curr = d_curr - d_mid
-                    delta_d_prev = d_mid - d_prev
-                    
-                    u_curr = self.history_u[-1]
-                    u_prev = self.history_u[-2*W-1]
-                    delta_u = u_curr - u_prev
-                    
-                    if abs(delta_u) > 0.1:
-                        # self.calib_g represents displacement change per 1.5s step per % duty cycle
-                        self.calib_g = ((delta_d_curr - delta_d_prev) / delta_u) / W
+                    # Bound g to prevent extreme values
+                    g_mag = np.linalg.norm(self.calib_g)
+                    if g_mag < 0.01:
+                        self.calib_g = (self.calib_g / (g_mag + 1e-5)) * 0.01
+                    elif g_mag > 10.0:
+                        self.calib_g = (self.calib_g / g_mag) * 10.0
                         
-                        # Bound g to prevent extreme values
-                        g_mag = np.linalg.norm(self.calib_g)
-                        if g_mag < 0.01:
-                            self.calib_g = (self.calib_g / (g_mag + 1e-5)) * 0.01
-                        elif g_mag > 10.0:
-                            self.calib_g = (self.calib_g / g_mag) * 10.0
-                            
-                        # Restore speed to initial u0
-                        self.rig.set_motor_speed(float(self.calib_u0), ramp_time=0.2)
-                        
-                        self.calib_state = "converged"
+                    # Update status for UI to indicate calibration has run
+                    if self.calib_state != "active":
+                        self.calib_state = "active"
                         self.tracking_status = "tracking"
-                        
-                        # Lock new reference frame at convergence to start tracking with 0 error
-                        self.ref_frame = frame.copy()
-                        self.last_d = np.array([0.0, 0.0])
-                        v_k = np.array([0.0, 0.0])
-                        d_k = np.array([0.0, 0.0])
-                        self.tracking_drift = [0.0, 0.0]
-                        
-                        event_logger.log(f"Calibration converged. Vector frozen at mag={np.linalg.norm(self.calib_g):.3f}, angle={np.rad2deg(np.arctan2(self.calib_g[1], self.calib_g[0])):.1f}°")
-                        event_logger.log("Tracking reference frame relocked to start guiding from 0 error.")
+                        event_logger.log(f"Calibration active. Vector: mag={np.linalg.norm(self.calib_g):.3f}, angle={np.rad2deg(np.arctan2(self.calib_g[1], self.calib_g[0])):.1f}°")
+
+            # Continuous PD guiding using the current calib_g estimation
+            g_dir = self.calib_g
+            g_mag_sq = np.dot(g_dir, g_dir)
+
+            if g_mag_sq > 1e-5:
+                self.ra_drift = float(np.dot(v_k, g_dir) / np.sqrt(g_mag_sq))
+
+                # Dec component
+                d_dec_vec = d_k - (np.dot(d_k, g_dir) / g_mag_sq) * g_dir
+                v_dec_vec = v_k - (np.dot(v_k, g_dir) / g_mag_sq) * g_dir
+                self.dec_drift = float(np.linalg.norm(v_dec_vec))
+
+                # PD-style guiding step: proportional error correction with velocity damping
+                Kp = 0.08
+                Kd = 0.15
+                u_correction = - Kp * (np.dot(d_k, g_dir) / g_mag_sq) - Kd * (np.dot(v_k, g_dir) / g_mag_sq)
+                u_correction = np.clip(u_correction, -1.5, 1.5) # limit max change per step to prevent oscillation
+
+                new_duty = np.clip(self.rig.current_duty + u_correction, 0.0, 100.0)
+                self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
             else:
-                # calib_state is converged -> Apply PD guiding!
-                g_dir = self.calib_g
-                g_mag_sq = np.dot(g_dir, g_dir)
-
-                if g_mag_sq > 0.001:
-                    d_ra = np.dot(d_k, g_dir) / np.sqrt(g_mag_sq)
-                    self.ra_drift = float(np.dot(v_k, g_dir) / np.sqrt(g_mag_sq))
-
-                    # Dec component
-                    d_dec_vec = d_k - (np.dot(d_k, g_dir) / g_mag_sq) * g_dir
-                    v_dec_vec = v_k - (np.dot(v_k, g_dir) / g_mag_sq) * g_dir
-                    self.dec_drift = float(np.linalg.norm(v_dec_vec))
-
-                    # PD-style guiding step: proportional error correction with velocity damping
-                    # Tuned for critical damping on mount response
-                    Kp = 0.08
-                    Kd = 0.15
-                    u_correction = - Kp * (np.dot(d_k, g_dir) / g_mag_sq) - Kd * (np.dot(v_k, g_dir) / g_mag_sq)
-                    u_correction = np.clip(u_correction, -1.5, 1.5) # limit max change per step to prevent oscillation
-
-                    new_duty = np.clip(self.rig.current_duty + u_correction, 0.0, 100.0)
-                    self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
-                else:
-                    self.ra_drift = 0.0
-                    self.dec_drift = 0.0
+                self.ra_drift = 0.0
+                self.dec_drift = 0.0
 
             self.last_u = self.rig.current_duty
             self.last_v = v_k
