@@ -25,6 +25,58 @@ class AstroPipeline:
        corrections, driving drift to zero.
     5. Capture & Sequence Management: Orchestrates manual captures and automated sequences
        saved directly to the local captures directory.
+
+    Pseudocode of the Calibration and Guiding Loop:
+    -----------------------------------------------
+    def _update_tracking(frame):
+        # 1. Rate Limiting (Thread-safe check)
+        lock(self):
+            if elapsed_time() < 1.5s: return
+            update_last_tracking_time()
+        
+        # 2. Image Alignment
+        dx, dy = align_images(ref_frame, frame)
+        d_k = [-dx, -dy]            # star displacement
+        v_k = (d_k - last_d) / dt   # star velocity
+        
+        lock(self):
+            if state is "learning":
+                # Stage A: Passive Baseline Drift
+                if stage is "baseline_wait":
+                    stage = "baseline_measure"
+                elif stage is "baseline_measure":
+                    accumulate_velocity(v_k)
+                    if collected 2 samples:
+                        v_baseline = average_accumulated()
+                        # Apply +8.0% nudge excitation
+                        apply_motor_duty(u0 + 8.0%)
+                        stage = "nudge_wait"
+                # Stage B: Nudged Response
+                elif stage is "nudge_wait":
+                    stage = "nudge_measure"
+                elif stage is "nudge_measure":
+                    accumulate_velocity(v_k)
+                    if collected 2 samples:
+                        v_nudged = average_accumulated()
+                        # Calculate mount response gain vector
+                        self.calib_g = (v_nudged - v_baseline) / 8.0
+                        restore_motor_duty(u0)
+                        
+                        # Reset tracking error to zero
+                        self.ref_frame = frame
+                        d_k = [0, 0]
+                        v_k = [0, 0]
+                        
+                        state = "converged"
+            else:
+                # Stage C: Active Closed-Loop PD Guiding
+                d_ra = dot(d_k, g) / |g|^2
+                v_ra = dot(v_k, g) / |g|^2
+                u_correction = - Kp * d_ra - Kd * v_ra
+                u_correction = clip(u_correction, -1.5%, 1.5%)
+                apply_motor_duty(current_duty + u_correction)
+                
+            last_d = d_k
     """
     
     def __init__(self, rig):
