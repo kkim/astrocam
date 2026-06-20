@@ -101,9 +101,7 @@ To track stars stably with an arbitrary camera orientation relative to the equat
 ### 1. System Model & Empirical Calibration
 Let $u(t)$ be the motor duty cycle (control input) and $\mathbf{v}(t) = [v_x(t), v_y(t)]^T$ be the observed star drift velocity on the sensor (in pixels/second).
 We model the change in drift velocity resulting from a change in duty cycle $\Delta u(t) = u(t) - u(t-\Delta t)$ as:
-$$
-\Delta \mathbf{v}(t) \approx \mathbf{g} \cdot \Delta u(t)
-$$
+$\Delta \mathbf{v}(t)\approx \mathbf{g} \cdot \Delta u(t)$
 where $\mathbf{g} = [g_x, g_y]^T$ is the **empirical mount response vector**. 
 * The magnitude $\|\mathbf{g}\|$ represents the physical sensitivity (pixels/second per % duty cycle).
 * The direction $\angle \mathbf{g}$ represents the Right Ascension (RA) axis orientation on the sensor.
@@ -113,22 +111,16 @@ To calculate $\mathbf{g}$ without interference from the feedback loop, we run a 
 1. **Baseline Measurement**: We measure the passive diurnal drift velocity $\bar{\mathbf{v}}_{\text{baseline}}$ at the starting duty cycle $u_0$ (usually $80.0\%$).
 2. **Nudge Excitation**: We apply a $+8.0\%$ duty cycle nudge ($u_{\text{nudged}} = u_0 + 8.0$) and measure the nudged velocity $\bar{\mathbf{v}}_{\text{nudged}}$.
 3. **Gain Extraction**: The calibration vector is directly computed as:
-$$
-\mathbf{g} = \frac{\bar{\mathbf{v}}_{\text{nudged}} - \bar{\mathbf{v}}_{\text{baseline}}}{8.0}
-$$
-4. **Zero-Error Transition**: Once $\mathbf{g}$ is resolved, we reset the tracking reference frame to the current frame to start closed-loop guiding from zero initial error, preventing star escape.
+  - $\mathbf{g}=\frac{\bar{\mathbf{v}}_ {\text{nudged}} - \bar{\mathbf{v}}_{\text{baseline}}} {8.0}$
+5. **Zero-Error Transition**: Once $\mathbf{g}$ is resolved, we reset the tracking reference frame to the current frame to start closed-loop guiding from zero initial error, preventing star escape.
 
 ### 3. Closed-Loop PD Tracking Control
-Let $\mathbf{d}_k = [d_x, d_y]^T$ be the accumulated position error (drift) from the reference frame, and $\mathbf{v}_k$ be the current drift velocity.
+Let $\mathbf{d}\_k= [d_x, d_y]^T$ be the accumulated position error (drift) from the reference frame, and $\mathbf{v}\_k$ be the current drift velocity.
 We project the error and velocity vectors onto the calibrated RA axis ($\mathbf{g}$):
-$$
-d_{RA} = \frac{\mathbf{d}_k \cdot \mathbf{g}}{\|\mathbf{g}\|}
-$$
-$$
-v_{RA} = \frac{\mathbf{v}_k \cdot \mathbf{g}}{\|\mathbf{g}\|}
-$$
+- $d\_{RA} = \frac{\mathbf{d}\_k \cdot \mathbf{g}}{\|\mathbf{g}\|}$
+- $v\_{RA} = \frac{\mathbf{v}\_k \cdot \mathbf{g}}{\|\mathbf{g}\|}$
+
 The motor duty cycle is corrected using a Proportional-Derivative (PD) feedback loop to prevent oscillations and ensure critical damping:
-$$
-\Delta u_k = - K_p \cdot \frac{d_{RA}}{\|\mathbf{g}\|} - K_d \cdot \frac{v_{RA}}{\|\mathbf{g}\|} = - K_p \frac{\mathbf{d}_k \cdot \mathbf{g}}{\|\mathbf{g}\|^2} - K_d \frac{\mathbf{v}_k \cdot \mathbf{g}}{\|\mathbf{g}\|^2}
-$$
+- $\Delta u_k = - K_p \cdot \frac{d_{RA}}{\|\mathbf{g}\|} - K_d \cdot \frac{v_{RA}}{\|\mathbf{g}\|} = - K_p \frac{\mathbf{d}_k \cdot \mathbf{g}}{\|\mathbf{g}\|^2} - K_d \frac{\mathbf{v}_k \cdot \mathbf{g}}{\|\mathbf{g}\|^2} $
+
 where $K_p = 0.08$ is the proportional gain, $K_d = 0.15$ is the derivative damping coefficient, and the correction step $\Delta u_k$ is clipped to $\pm 1.5\%$ per step.
