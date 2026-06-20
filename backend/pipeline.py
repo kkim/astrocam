@@ -8,7 +8,33 @@ from logger import event_logger
 from alignment_utils import align_images
 
 class AstroPipeline:
+    """
+    AstroPipeline manages the image processing and closed-loop motor control pipeline.
+    
+    It operates as a decoupled controller between raw frame acquisition (the Rigs) and 
+    the user interface. Its core responsibilities include:
+    1. Tier 1 Stacking: Performs real-time frame accumulation using a running weighted
+       average to reduce sensor noise in the live stream.
+    2. Sub-pixel Image Alignment: Matches stars between the active frame and a locked
+       reference frame using Star Neighborhood Descriptors to detect camera drift.
+    3. Auto-Tracking Calibration: Solves the sensor-to-mount coordinate transformation
+       and gain vector g (how star velocity responds to motor duty cycle u) using a 
+       controlled nudge sequence, completely independent of the PD controller.
+    4. Closed-loop PD Guiding: Projects the measured drift and velocity errors onto the
+       learned calibration vector to calculate proportional and derivative duty cycle
+       corrections, driving drift to zero.
+    5. Capture & Sequence Management: Orchestrates manual captures and automated sequences
+       saved directly to the local captures directory.
+    """
+    
     def __init__(self, rig):
+        """
+        Initializes the pipeline with a camera/motor rig and starts the background 
+        processing thread.
+        
+        Args:
+            rig: An instance of BaseAstroRig (MockAstroRig or RealAstroRig).
+        """
         self.rig = rig
         
         # Pipeline processing state
@@ -22,21 +48,25 @@ class AstroPipeline:
         self._frame_count = 0
         self._last_fps_calc_time = time.time()
         
-        # Tracking State
+        # Tracking & Calibration State
         self.auto_tracking = False
         self.tracking_status = "inactive"
         self.ref_frame = None
         self.tracking_drift = [0.0, 0.0]
         self.ra_drift = 0.0
         self.dec_drift = 0.0
-        self.calib_g = np.array([0.2, 0.0]) # default guess with positive feedback sign
+        self.calib_g = np.array([0.2, 0.0]) # default guess
         self.calib_state = "learning"
-        self.calib_updates = 0
-        self.calib_nudged = False
         self.last_tracking_time = 0.0
         self.last_u = 0.0
         self.last_d = np.array([0.0, 0.0])
         self.last_v = np.array([0.0, 0.0])
+        
+        # Calibration state machine variables
+        self.calib_u0 = 80.0
+        self.calib_stage = "baseline_wait"
+        self.calib_v_baseline = []
+        self.calib_v_nudged = []
         
         # Sequence state
         self.sequence_info = {
@@ -50,6 +80,10 @@ class AstroPipeline:
         self.thread.start()
 
     def _processing_loop(self):
+        """
+        Main worker loop running in a background thread. Continuous loops to acquire 
+        raw frames from the rig and feed them into the processing pipeline.
+        """
         while self.is_running:
             frame = self.rig.get_raw_frame()
             if frame is not None:
@@ -59,6 +93,14 @@ class AstroPipeline:
                 time.sleep(0.04) # ~25 Hz sleep if no frame
 
     def _process_frame(self, frame):
+        """
+        Applies Tier 1 weighted average stacking to the raw frame to reduce noise, 
+        calculates performance telemetry (FPS, brightness), and triggers the 
+        closed-loop tracking logic if auto-tracking is enabled.
+        
+        Args:
+            frame: Raw BGR/grayscale numpy array acquired from the camera rig.
+        """
         with self.lock:
             # Tier 1 Stacking (Weighted averaging)
             if self.n_avg <= 1:
@@ -89,6 +131,13 @@ class AstroPipeline:
             self._update_tracking(self.latest_frame)
 
     def get_frame(self):
+        """
+        Downsamples and compresses the latest processed frame into JPEG format for 
+        streaming to the Web UI dashboard.
+        
+        Returns:
+            bytes: JPEG-encoded image bytes or None if no frame is available.
+        """
         with self.lock:
             if self.latest_frame is None: return None
             h, w = self.latest_frame.shape[:2]
@@ -99,6 +148,13 @@ class AstroPipeline:
             return jpeg.tobytes() if ret else None
 
     def set_n_avg(self, n):
+        """
+        Updates the running average frame count. Changing this value resets the 
+        accumulator to prevent ghosting artifacts when settings are changed.
+        
+        Args:
+            n: Integer number of frames to average.
+        """
         with self.lock:
             new_n = int(n)
             if new_n != self.n_avg:
@@ -107,6 +163,14 @@ class AstroPipeline:
         return True
 
     def set_auto_tracking(self, enable: bool):
+        """
+        Enables or disables the closed-loop auto-guiding loop. Disabling resets all 
+        calibrations and sets the motor back to passive mode. Enabling kicks off 
+        the calibration sequence.
+        
+        Args:
+            enable: Boolean indicating whether to start or stop auto-tracking.
+        """
         with self.lock:
             if enable == self.auto_tracking:
                 return
@@ -116,9 +180,11 @@ class AstroPipeline:
                 self.tracking_status = "calibrating"
                 self.calib_g = np.array([0.2, 0.0])
                 self.calib_state = "learning"
-                self.calib_updates = 0
-                self.calib_nudged = False
                 self.last_tracking_time = 0.0
+                self.calib_u0 = self.rig.current_duty
+                self.calib_stage = "baseline_wait"
+                self.calib_v_baseline = []
+                self.calib_v_nudged = []
                 event_logger.log("Auto-tracking enabled.")
             else:
                 self.tracking_status = "inactive"
@@ -126,6 +192,13 @@ class AstroPipeline:
                 event_logger.log("Auto-tracking disabled.")
 
     def get_tracking_status(self):
+        """
+        Gathers current autoguider telemetry, including active status, drift errors,
+        calibrated vector magnitude/angle, and simulation properties.
+        
+        Returns:
+            dict: Telemetry data serialized for frontend updates.
+        """
         with self.lock:
             d_mag = np.linalg.norm(self.tracking_drift)
             g_mag = np.linalg.norm(self.calib_g)
@@ -162,29 +235,54 @@ class AstroPipeline:
             }
 
     def _update_tracking(self, frame):
+        """
+        Executes the closed-loop tracking control step. 
+        
+        This method utilizes a state machine to first calibrate the mount response:
+        1. 'baseline_wait' / 'baseline_measure': Measures the passive diurnal drift of 
+           the star at the baseline duty cycle u0.
+        2. 'nudge_wait' / 'nudge_measure': Applies a +8.0% duty cycle nudge and measures 
+           the nudged star velocity.
+        3. 'converged': Calculates the calibration gain vector g = (v_nudged - v_baseline) / 8.0,
+           resets the tracking reference frame to start guiding with zero initial displacement,
+           and transitions to the active 'tracking' phase.
+           
+        During the 'tracking' phase, it calculates the sub-pixel star translation and runs
+        a Proportional-Derivative (PD) controller:
+           u_correction = - Kp * (d_k . g / |g|^2) - Kd * (v_k . g / |g|^2)
+        and sends the adjusted speed command to the mount rig.
+        
+        This method checks and locks the tracking timestamp immediately upon entry to prevent
+        duplicate executions from fast-arriving frames.
+        
+        Args:
+            frame: The latest image frame to analyze for drift.
+        """
         now = time.time()
-        if self.ref_frame is None:
-            self.ref_frame = frame.copy()
-            self.ref_time = now
+        
+        # Check and update timestamp under lock immediately to prevent concurrent entry
+        with self.lock:
+            if self.ref_frame is None:
+                self.ref_frame = frame.copy()
+                self.ref_time = now
+                self.last_tracking_time = now
+                self.last_u = self.rig.current_duty
+                self.last_d = np.array([0.0, 0.0])
+                self.last_v = np.array([0.0, 0.0])
+                self.tracking_drift = [0.0, 0.0]
+                self.calib_state = "learning"
+                self.calib_stage = "baseline_wait"
+                self.calib_v_baseline = []
+                self.calib_v_nudged = []
+                event_logger.log("Calibration started. Tracking reference frame locked.")
+                return
+
+            dt = now - self.last_tracking_time
+            if dt < 1.5:
+                return
             self.last_tracking_time = now
-            self.last_u = self.rig.current_duty
-            self.last_d = np.array([0.0, 0.0])
-            self.last_v = np.array([0.0, 0.0])
-            self.tracking_drift = [0.0, 0.0]
-            self.ra_drift = 0.0
-            self.dec_drift = 0.0
-            self.tracking_status = "calibrating"
-            self.calib_state = "learning"
-            self.calib_updates = 0
-            self.calib_nudged = False
-            event_logger.log("Calibration started. Tracking reference frame locked.")
-            return
 
-        dt = now - self.last_tracking_time
-        if dt < 1.5:
-            return
-
-        # sub-pixel translation alignment
+        # Sub-pixel translation alignment (CPU intensive, runs outside main lock to keep UI responsive)
         T = align_images(self.ref_frame, frame, translation_only=True)
         dx = float(T[0, 2])
         dy = float(T[1, 2])
@@ -192,77 +290,100 @@ class AstroPipeline:
         if abs(dx) < 1e-5 and abs(dy) < 1e-5:
             return
 
-        # Position error d_k (current relative to reference)
-        d_k = np.array([-dx, -dy])
-        self.tracking_drift = [float(d_k[0]), float(d_k[1])]
+        with self.lock:
+            # Position error d_k (current relative to reference)
+            d_k = np.array([-dx, -dy])
+            self.tracking_drift = [float(d_k[0]), float(d_k[1])]
 
-        # Measured velocity since last update step
-        v_k = (d_k - self.last_d) / dt
+            # Measured velocity since last update step
+            v_k = (d_k - self.last_d) / dt
 
-        # Continuous calibration update using delta duty cycle and delta velocity
-        delta_u = self.rig.current_duty - self.last_u
-        delta_v = v_k - self.last_v
-
-        if abs(delta_u) > 0.05:
             if self.calib_state == "learning":
-                alpha = 0.8
+                if self.calib_stage == "baseline_wait":
+                    self.calib_stage = "baseline_measure"
+                    event_logger.log("Stabilized at baseline. Starting baseline measurement...")
+                elif self.calib_stage == "baseline_measure":
+                    self.calib_v_baseline.append(v_k)
+                    if len(self.calib_v_baseline) == 2:
+                        # Apply positive nudge of +8% for high signal-to-noise ratio
+                        nudge = 8.0
+                        new_duty = np.clip(self.calib_u0 + nudge, 0.0, 100.0)
+                        self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
+                        self.calib_stage = "nudge_wait"
+                        event_logger.log(f"Calibration nudge of +{nudge}% applied (target {new_duty}%). Waiting to stabilize...")
+                elif self.calib_stage == "nudge_wait":
+                    self.calib_stage = "nudge_measure"
+                    event_logger.log("Stabilized at nudged duty. Starting nudge measurement...")
+                elif self.calib_stage == "nudge_measure":
+                    self.calib_v_nudged.append(v_k)
+                    if len(self.calib_v_nudged) == 2:
+                        # Calculate calibration vector g
+                        v_baseline_avg = np.mean(self.calib_v_baseline, axis=0)
+                        v_nudged_avg = np.mean(self.calib_v_nudged, axis=0)
+                        nudge = 8.0
+                        self.calib_g = (v_nudged_avg - v_baseline_avg) / nudge
+                        
+                        # Bound g to prevent extreme values
+                        g_mag = np.linalg.norm(self.calib_g)
+                        if g_mag < 0.05:
+                            self.calib_g = (self.calib_g / (g_mag + 1e-5)) * 0.05
+                        elif g_mag > 50.0:
+                            self.calib_g = (self.calib_g / g_mag) * 50.0
+                            
+                        # Restore speed to initial u0
+                        self.rig.set_motor_speed(float(self.calib_u0), ramp_time=0.2)
+                        
+                        self.calib_state = "converged"
+                        self.tracking_status = "tracking"
+                        
+                        # Lock new reference frame at convergence to start tracking with 0 error
+                        self.ref_frame = frame.copy()
+                        self.last_d = np.array([0.0, 0.0])
+                        v_k = np.array([0.0, 0.0])
+                        d_k = np.array([0.0, 0.0])
+                        self.tracking_drift = [0.0, 0.0]
+                        
+                        event_logger.log(f"Calibration converged. Vector frozen at mag={np.linalg.norm(self.calib_g):.3f}, angle={np.rad2deg(np.arctan2(self.calib_g[1], self.calib_g[0])):.1f}°")
+                        event_logger.log("Tracking reference frame relocked to start guiding from 0 error.")
             else:
-                alpha = 0.1
-                
-            reg = 0.005
-            g_update = alpha * (delta_v - self.calib_g * delta_u) * delta_u / (delta_u**2 + reg)
-            self.calib_g += g_update
+                # calib_state is converged -> Apply PD guiding!
+                g_dir = self.calib_g
+                g_mag_sq = np.dot(g_dir, g_dir)
 
-            # Bound g
-            g_mag = np.linalg.norm(self.calib_g)
-            if g_mag < 0.05:
-                self.calib_g = (self.calib_g / (g_mag + 1e-5)) * 0.05
-            elif g_mag > 50.0:
-                self.calib_g = (self.calib_g / g_mag) * 50.0
+                if g_mag_sq > 0.01:
+                    d_ra = np.dot(d_k, g_dir) / np.sqrt(g_mag_sq)
+                    self.ra_drift = float(np.dot(v_k, g_dir) / np.sqrt(g_mag_sq))
 
-            self.calib_updates += 1
-            if self.calib_updates >= 5:
-                self.tracking_status = "tracking"
-                self.calib_state = "converged"
+                    # Dec component
+                    d_dec_vec = d_k - (np.dot(d_k, g_dir) / g_mag_sq) * g_dir
+                    v_dec_vec = v_k - (np.dot(v_k, g_dir) / g_mag_sq) * g_dir
+                    self.dec_drift = float(np.linalg.norm(v_dec_vec))
 
-        # Excitation nudge or PD guiding
-        if self.calib_state == "learning" and not self.calib_nudged:
-            self.calib_nudged = True
-            nudge = 1.0
-            new_duty = np.clip(self.rig.current_duty + nudge, 0.0, 100.0)
-            event_logger.log(f"Calibration nudge applied (+{nudge}% duty cycle) for excitation.")
-            self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
-        else:
-            g_dir = self.calib_g
-            g_mag_sq = np.dot(g_dir, g_dir)
+                    # PD-style guiding step: proportional error correction with velocity damping
+                    # Tuned for critical damping on mount response
+                    Kp = 0.08
+                    Kd = 0.15
+                    u_correction = - Kp * (np.dot(d_k, g_dir) / g_mag_sq) - Kd * (np.dot(v_k, g_dir) / g_mag_sq)
+                    u_correction = np.clip(u_correction, -1.5, 1.5) # limit max change per step to prevent oscillation
 
-            if g_mag_sq > 0.01:
-                d_ra = np.dot(d_k, g_dir) / np.sqrt(g_mag_sq)
-                self.ra_drift = float(np.dot(v_k, g_dir) / np.sqrt(g_mag_sq))
+                    new_duty = np.clip(self.rig.current_duty + u_correction, 0.0, 100.0)
+                    self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
+                else:
+                    self.ra_drift = 0.0
+                    self.dec_drift = 0.0
 
-                # Dec component
-                d_dec_vec = d_k - (np.dot(d_k, g_dir) / g_mag_sq) * g_dir
-                v_dec_vec = v_k - (np.dot(v_k, g_dir) / g_mag_sq) * g_dir
-                self.dec_drift = float(np.linalg.norm(v_dec_vec))
-
-                # PD-style guiding step: proportional error correction with velocity damping
-                Kp = 0.05
-                Kd = 0.20
-                u_correction = - Kp * (np.dot(d_k, g_dir) / g_mag_sq) - Kd * (np.dot(v_k, g_dir) / g_mag_sq)
-                u_correction = np.clip(u_correction, -1.0, 1.0) # Up to 1.0% duty cycle change per step for fast converge
-
-                new_duty = np.clip(self.rig.current_duty + u_correction, 0.0, 100.0)
-                self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
-            else:
-                self.ra_drift = 0.0
-                self.dec_drift = 0.0
-
-        self.last_u = self.rig.current_duty
-        self.last_v = v_k
-        self.last_d = d_k
-        self.last_tracking_time = now
+            self.last_u = self.rig.current_duty
+            self.last_v = v_k
+            self.last_d = d_k
 
     def capture_frame(self):
+        """
+        Captures the latest processed image frame from the pipeline and saves it 
+        to disk in the captures folder.
+        
+        Returns:
+            dict: JSON success response containing the filename, or an error details dictionary.
+        """
         with self.lock:
             if self.latest_frame is None: return {"success": False, "error": "No frame"}
             frame = self.latest_frame.copy()
@@ -276,6 +397,16 @@ class AstroPipeline:
         return {"success": False, "error": "Failed to write file"}
 
     def start_sequence(self, count, interval):
+        """
+        Starts an automated capture sequence taking photos at set intervals.
+        
+        Args:
+            count: Total number of frames to capture.
+            interval: Float time in seconds between captures.
+            
+        Returns:
+            bool: True if sequence successfully started, False if a sequence is already active.
+        """
         if self.sequence_info["active"]: return False
         self.sequence_info.update({"active": True, "total": count, "count": 0, "interval": interval})
         self.sequence_stop_event.clear()
@@ -283,6 +414,9 @@ class AstroPipeline:
         return True
 
     def _sequence_loop(self):
+        """
+        Background sequence thread loop that triggers frame captures at the requested intervals.
+        """
         while self.sequence_info["count"] < self.sequence_info["total"] and not self.sequence_stop_event.is_set():
             if time.time() - self.sequence_info["last_capture_time"] >= self.sequence_info["interval"]:
                 with self.lock: frame = self.latest_frame.copy() if self.latest_frame is not None else None
@@ -297,8 +431,17 @@ class AstroPipeline:
         self.sequence_info["active"] = False
 
     def get_sequence_status(self):
+        """
+        Queries status and progress of the active sequence.
+        
+        Returns:
+            dict: Sequence state properties.
+        """
         return self.sequence_info
 
     def close(self):
+        """
+        Closes background pipeline threads and stops active sequences.
+        """
         self.is_running = False
         self.sequence_stop_event.set()
