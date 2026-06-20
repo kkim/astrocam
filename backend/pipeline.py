@@ -40,36 +40,34 @@ class AstroPipeline:
         v_k = (d_k - last_d) / dt   # star velocity
         
         lock(self):
+            # Append current state to rolling history
+            history_u.append(current_duty)
+            history_d.append(d_k)
+            calib_updates += 1
+            
             if state is "learning":
-                # Stage A: Passive Baseline Drift
-                if stage is "baseline_wait":
-                    stage = "baseline_measure"
-                elif stage is "baseline_measure":
-                    accumulate_velocity(v_k)
-                    if collected 2 samples:
-                        v_baseline = average_accumulated()
-                        # Apply +8.0% nudge excitation
-                        apply_motor_duty(u0 + 8.0%)
-                        stage = "nudge_wait"
-                # Stage B: Nudged Response
-                elif stage is "nudge_wait":
-                    stage = "nudge_measure"
-                elif stage is "nudge_measure":
-                    accumulate_velocity(v_k)
-                    if collected 2 samples:
-                        v_nudged = average_accumulated()
-                        # Calculate mount response gain vector
-                        self.calib_g = (v_nudged - v_baseline) / 8.0
-                        restore_motor_duty(u0)
-                        
-                        # Reset tracking error to zero
-                        self.ref_frame = frame
-                        d_k = [0, 0]
-                        v_k = [0, 0]
-                        
-                        state = "converged"
+                W = 5 # response delay in steps
+                if calib_updates == W:
+                    # Apply initial +5.0% nudge
+                    apply_motor_duty(u0 + 5.0%)
+                elif calib_updates >= 2 * W:
+                    # Compute displacement change over W steps (nudged vs baseline)
+                    delta_d_curr = d_k - d_mid
+                    delta_d_prev = d_mid - d_prev
+                    delta_u = u_curr - u_prev
+                    
+                    # Calculate mount response gain vector (scaled to step-level)
+                    self.calib_g = ((delta_d_curr - delta_d_prev) / delta_u) / W
+                    restore_motor_duty(u0)
+                    
+                    # Reset tracking error to zero
+                    self.ref_frame = frame
+                    d_k = [0, 0]
+                    v_k = [0, 0]
+                    
+                    state = "converged"
             else:
-                # Stage C: Active Closed-Loop PD Guiding
+                # Active Closed-Loop PD Guiding
                 d_ra = dot(d_k, g) / |g|^2
                 v_ra = dot(v_k, g) / |g|^2
                 u_correction = - Kp * d_ra - Kd * v_ra
@@ -114,11 +112,11 @@ class AstroPipeline:
         self.last_d = np.array([0.0, 0.0])
         self.last_v = np.array([0.0, 0.0])
         
-        # Calibration state machine variables
+        # Calibration rolling history variables
         self.calib_u0 = 80.0
-        self.calib_stage = "baseline_wait"
-        self.calib_v_baseline = []
-        self.calib_v_nudged = []
+        self.calib_updates = 0
+        self.history_u = []
+        self.history_d = []
         
         # Sequence state
         self.sequence_info = {
@@ -234,9 +232,9 @@ class AstroPipeline:
                 self.calib_state = "learning"
                 self.last_tracking_time = 0.0
                 self.calib_u0 = self.rig.current_duty
-                self.calib_stage = "baseline_wait"
-                self.calib_v_baseline = []
-                self.calib_v_nudged = []
+                self.calib_updates = 0
+                self.history_u = []
+                self.history_d = []
                 event_logger.log("Auto-tracking enabled.")
             else:
                 self.tracking_status = "inactive"
@@ -290,17 +288,15 @@ class AstroPipeline:
         """
         Executes the closed-loop tracking control step. 
         
-        This method utilizes a state machine to first calibrate the mount response:
-        1. 'baseline_wait' / 'baseline_measure': Measures the passive diurnal drift of 
-           the star at the baseline duty cycle u0.
-        2. 'nudge_wait' / 'nudge_measure': Applies a +8.0% duty cycle nudge and measures 
-           the nudged star velocity.
-        3. 'converged': Calculates the calibration gain vector g = (v_nudged - v_baseline) / 8.0,
-           resets the tracking reference frame to start guiding with zero initial displacement,
-           and transitions to the active 'tracking' phase.
+        This method utilizes a continuous rolling buffer of history to calibrate the mount response:
+        1. For the first W=5 steps, the mount tracks at baseline u0.
+        2. At W=5 steps, a nudge of +5.0% is applied to excite the system.
+        3. After 2*W=10 steps, we calculate the gain vector g based on the displacement difference
+           between the nudged and baseline phases, scaled to the step-level.
+        4. We reset the reference frame to the current frame to zero out the accumulation error, 
+           and transition to 'converged' tracking mode.
            
-        During the 'tracking' phase, it calculates the sub-pixel star translation and runs
-        a Proportional-Derivative (PD) controller:
+        During the 'tracking' phase, we run a critically-damped Proportional-Derivative (PD) controller:
            u_correction = - Kp * (d_k . g / |g|^2) - Kd * (v_k . g / |g|^2)
         and sends the adjusted speed command to the mount rig.
         
@@ -323,9 +319,9 @@ class AstroPipeline:
                 self.last_v = np.array([0.0, 0.0])
                 self.tracking_drift = [0.0, 0.0]
                 self.calib_state = "learning"
-                self.calib_stage = "baseline_wait"
-                self.calib_v_baseline = []
-                self.calib_v_nudged = []
+                self.calib_updates = 0
+                self.history_u = [self.rig.current_duty]
+                self.history_d = [np.array([0.0, 0.0])]
                 event_logger.log("Calibration started. Tracking reference frame locked.")
                 return
 
@@ -350,37 +346,42 @@ class AstroPipeline:
             # Measured velocity since last update step
             v_k = (d_k - self.last_d) / dt
 
+            # Append current state to history
+            self.history_u.append(self.rig.current_duty)
+            self.history_d.append(d_k)
+            self.calib_updates += 1
+
             if self.calib_state == "learning":
-                if self.calib_stage == "baseline_wait":
-                    self.calib_stage = "baseline_measure"
-                    event_logger.log("Stabilized at baseline. Starting baseline measurement...")
-                elif self.calib_stage == "baseline_measure":
-                    self.calib_v_baseline.append(v_k)
-                    if len(self.calib_v_baseline) == 2:
-                        # Apply positive nudge of +8% for high signal-to-noise ratio
-                        nudge = 8.0
-                        new_duty = np.clip(self.calib_u0 + nudge, 0.0, 100.0)
-                        self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
-                        self.calib_stage = "nudge_wait"
-                        event_logger.log(f"Calibration nudge of +{nudge}% applied (target {new_duty}%). Waiting to stabilize...")
-                elif self.calib_stage == "nudge_wait":
-                    self.calib_stage = "nudge_measure"
-                    event_logger.log("Stabilized at nudged duty. Starting nudge measurement...")
-                elif self.calib_stage == "nudge_measure":
-                    self.calib_v_nudged.append(v_k)
-                    if len(self.calib_v_nudged) == 2:
-                        # Calculate calibration vector g
-                        v_baseline_avg = np.mean(self.calib_v_baseline, axis=0)
-                        v_nudged_avg = np.mean(self.calib_v_nudged, axis=0)
-                        nudge = 8.0
-                        self.calib_g = (v_nudged_avg - v_baseline_avg) / nudge
+                W = 5 # response delay in steps
+                if self.calib_updates == W:
+                    # Apply initial nudge of +5.0%
+                    nudge = 5.0
+                    new_duty = np.clip(self.calib_u0 + nudge, 0.0, 100.0)
+                    self.rig.set_motor_speed(float(new_duty), ramp_time=0.2)
+                    event_logger.log(f"Calibration nudge of +{nudge}% applied (target {new_duty}%). Waiting {W} steps...")
+                elif self.calib_updates >= 2 * W:
+                    # Compute displacement change during the last W steps (nudged phase)
+                    d_curr = self.history_d[-1]
+                    d_mid = self.history_d[-W-1]
+                    d_prev = self.history_d[-2*W-1]
+                    
+                    delta_d_curr = d_curr - d_mid
+                    delta_d_prev = d_mid - d_prev
+                    
+                    u_curr = self.history_u[-1]
+                    u_prev = self.history_u[-2*W-1]
+                    delta_u = u_curr - u_prev
+                    
+                    if abs(delta_u) > 0.1:
+                        # self.calib_g represents displacement change per 1.5s step per % duty cycle
+                        self.calib_g = ((delta_d_curr - delta_d_prev) / delta_u) / W
                         
                         # Bound g to prevent extreme values
                         g_mag = np.linalg.norm(self.calib_g)
-                        if g_mag < 0.05:
-                            self.calib_g = (self.calib_g / (g_mag + 1e-5)) * 0.05
-                        elif g_mag > 50.0:
-                            self.calib_g = (self.calib_g / g_mag) * 50.0
+                        if g_mag < 0.01:
+                            self.calib_g = (self.calib_g / (g_mag + 1e-5)) * 0.01
+                        elif g_mag > 10.0:
+                            self.calib_g = (self.calib_g / g_mag) * 10.0
                             
                         # Restore speed to initial u0
                         self.rig.set_motor_speed(float(self.calib_u0), ramp_time=0.2)
@@ -402,7 +403,7 @@ class AstroPipeline:
                 g_dir = self.calib_g
                 g_mag_sq = np.dot(g_dir, g_dir)
 
-                if g_mag_sq > 0.01:
+                if g_mag_sq > 0.001:
                     d_ra = np.dot(d_k, g_dir) / np.sqrt(g_mag_sq)
                     self.ra_drift = float(np.dot(v_k, g_dir) / np.sqrt(g_mag_sq))
 
