@@ -110,8 +110,9 @@ where $\mathbf{g} = [g_x, g_y]^T$ is the **empirical mount response vector**.
 To calculate $\mathbf{g}$ without interference from the feedback loop, we run a sequential calibration routine:
 1. **Baseline Measurement**: We measure the passive diurnal drift velocity $\bar{\mathbf{v}}_{\text{baseline}}$ at the starting duty cycle $u_0$ (usually $80.0\%$).
 2. **Nudge Excitation**: We apply a $+8.0\%$ duty cycle nudge ($u_{\text{nudged}} = u_0 + 8.0$) and measure the nudged velocity $\bar{\mathbf{v}}_{\text{nudged}}$.
-3. **Gain Extraction**: The calibration vector is directly computed as: $\mathbf{g}=\frac{\bar{\mathbf{v}}_ {\text{nudged}} - \bar{\mathbf{v}}_{\text{baseline}}} {8.0}$
-4. **Zero-Error Transition**: Once $\mathbf{g}$ is resolved, we reset the tracking reference frame to the current frame to start closed-loop guiding from zero initial error, preventing star escape.
+3. **Gain Extraction**: The calibration vector is directly computed as:
+  - $\mathbf{g}=\frac{\bar{\mathbf{v}}_ {\text{nudged}} - \bar{\mathbf{v}}_{\text{baseline}}} {8.0}$
+5. **Zero-Error Transition**: Once $\mathbf{g}$ is resolved, we reset the tracking reference frame to the current frame to start closed-loop guiding from zero initial error, preventing star escape.
 
 ### 3. Closed-Loop PD Tracking Control
 Let $\mathbf{d}\_k= [d_x, d_y]^T$ be the accumulated position error (drift) from the reference frame, and $\mathbf{v}\_k$ be the current drift velocity.
