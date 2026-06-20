@@ -34,10 +34,10 @@ app.mount("/captures", StaticFiles(directory="../captures"), name="captures")
 
 @app.get("/gallery")
 def list_captures():
-    files = glob.glob("../captures/*.jpg")
+    files = glob.glob("../captures/panorama_*.jpg")
     # Sort by modification time (newest first)
     files.sort(key=os.path.getmtime, reverse=True)
-    return [os.path.basename(f) for f in files[:20]] # Return latest 20
+    return [os.path.basename(f) for f in files[:6]] # Return latest 6 panorama images
 
 # Configuration persistence
 CONFIG_PATH = "config.json"
@@ -115,6 +115,25 @@ def set_motor_speed(update: MotorSpeedUpdate):
     if success:
         event_logger.log(f"Motor speed: {update.speed}%")
     return {"success": success, "speed": update.speed}
+
+class CameraAngleUpdate(BaseModel):
+    angle: float
+
+@app.post("/mock/camera_angle")
+def set_mock_camera_angle(update: CameraAngleUpdate):
+    if not rig: return {"success": False, "error": "Rig not initialized"}
+    success = rig.set_camera_angle(update.angle)
+    return {"success": success, "angle": update.angle}
+
+class SimDriftUpdate(BaseModel):
+    speed: float
+    angle: float
+
+@app.post("/mock/sim_drift")
+def set_mock_sim_drift(update: SimDriftUpdate):
+    if not rig: return {"success": False, "error": "Rig not initialized"}
+    success = rig.set_sim_drift(update.speed, update.angle)
+    return {"success": success, "speed": update.speed, "angle": update.angle}
 
 @app.get("/stream")
 async def stream():
@@ -208,6 +227,20 @@ def get_panorama_status():
 def stop_panorama():
     panorama.stop()
     return {"success": True}
+
+class TrackingUpdate(BaseModel):
+    enable: bool
+
+@app.post("/tracking/toggle")
+def set_tracking(req: TrackingUpdate):
+    if not rig: return {"success": False, "error": "Rig not initialized"}
+    rig.set_auto_tracking(req.enable)
+    return {"success": True, "active": req.enable}
+
+@app.get("/tracking/status")
+def get_tracking_status():
+    if not rig: return {"active": False, "status": "inactive"}
+    return rig.get_tracking_status()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

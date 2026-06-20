@@ -24,8 +24,8 @@ class MockAstroRig(BaseAstroRig):
         }
         
         # Motor state
-        self.current_duty = 85.0
-        self.target_duty = 85.0
+        self.current_duty = 80.0
+        self.target_duty = 80.0
         self.ramp_thread = None
         self.stop_ramping = threading.Event()
         
@@ -33,6 +33,40 @@ class MockAstroRig(BaseAstroRig):
         self.pos_x = self.width * 0.25
         self.pos_y = self.height * 0.25
         self.last_update_time = time.time()
+
+        # Load persisted simulation parameters from config.json if available
+        import json
+        config_data = {}
+        if os.path.exists("config.json"):
+            try:
+                with open("config.json", "r") as f:
+                    config_data = json.load(f)
+            except Exception:
+                pass
+
+        # Simulated Tracking drift parameters (diurnal rot angle & raw drift)
+        self.camera_angle = np.deg2rad(config_data.get("camera_angle", 45.0))
+        self.sim_drift_speed = float(config_data.get("sim_drift_speed", 60.0))
+        if self.sim_drift_speed < 30.0:
+            self.sim_drift_speed = 60.0 # Upgrade legacy slow settings
+        self.sim_drift_angle = np.deg2rad(config_data.get("sim_drift_angle", 45.0))
+
+
+        # Tracking State
+        self.auto_tracking = False
+        self.tracking_status = "inactive"
+        self.ref_frame = None
+        self.tracking_drift = [0.0, 0.0]
+        self.ra_drift = 0.0
+        self.dec_drift = 0.0
+        self.calib_g = np.array([0.2, 0.0]) # default guess with positive feedback sign
+        self.calib_state = "learning"
+        self.calib_updates = 0
+        self.calib_nudged = False
+        self.last_tracking_time = 0.0
+        self.last_u = 85.0
+        self.last_d = np.array([0.0, 0.0])
+        self.last_v = np.array([0.0, 0.0])
         
         # Sequence state
         self.sequence_info = {
@@ -51,6 +85,7 @@ class MockAstroRig(BaseAstroRig):
 
         # Main simulation thread
         self.latest_frame = None
+        self.raw_frame = None
         self.acc_frame = None
         self.thread = threading.Thread(target=self._sim_loop, daemon=True)
         self.thread.start()
@@ -82,10 +117,21 @@ class MockAstroRig(BaseAstroRig):
             now = time.time()
             dt = now - self.last_update_time
             
-            # Drift Rate: 1% duty difference = 20 pixels/sec drift
-            # 85.0 is neutral (Sidereal)
-            drift_rate = (self.current_duty - 85.0) * 20.0
-            self.pos_x = (self.pos_x + drift_rate * dt) % (self.full_width - self.width)
+            # Diurnal drift vector
+            v_diurnal_x = self.sim_drift_speed * np.cos(self.sim_drift_angle)
+            v_diurnal_y = self.sim_drift_speed * np.sin(self.sim_drift_angle)
+            
+            # Mount compensation vector: at 85% duty cycle, mount speed matches sim_drift_speed
+            # and moves in the direction opposite to the camera_angle to cancel out drift.
+            v_mount_mag = - (self.current_duty / 85.0) * self.sim_drift_speed
+            v_mount_x = v_mount_mag * np.cos(self.camera_angle)
+            v_mount_y = v_mount_mag * np.sin(self.camera_angle)
+            
+            v_x = v_diurnal_x + v_mount_x
+            v_y = v_diurnal_y + v_mount_y
+            
+            self.pos_x = (self.pos_x + v_x * dt) % (self.full_width - self.width)
+            self.pos_y = (self.pos_y + v_y * dt) % (self.full_height - self.height)
             
             self.last_update_time = now
             
@@ -95,6 +141,7 @@ class MockAstroRig(BaseAstroRig):
 
     def _process_frame(self, frame):
         with self.lock:
+            self.raw_frame = frame
             if self.n_avg <= 1:
                 self.latest_frame = frame
                 self.acc_frame = None
@@ -105,6 +152,10 @@ class MockAstroRig(BaseAstroRig):
                 else:
                     cv2.accumulateWeighted(frame, self.acc_frame, alpha)
                 self.latest_frame = cv2.convertScaleAbs(self.acc_frame)
+        
+        # Run tracking update outside the lock
+        if self.auto_tracking:
+            self._update_tracking(self.latest_frame)
 
     def _generate_mock_frame(self):
         # Use simulated positions for crop
@@ -136,8 +187,8 @@ class MockAstroRig(BaseAstroRig):
 
     def get_raw_frame(self):
         with self.lock:
-            if self.latest_frame is None: return None
-            return self.latest_frame.copy()
+            if self.raw_frame is None: return None
+            return self.raw_frame.copy()
 
     def set_camera_param(self, prop, value):
         with self.lock:
@@ -216,7 +267,203 @@ class MockAstroRig(BaseAstroRig):
     def get_motor_status(self):
         return {"duty_cycle": round(self.current_duty, 2), "target_duty": self.target_duty, "voltage": round(3.3 * (self.current_duty / 100.0), 2), "mock_mode": True}
 
+    def set_auto_tracking(self, enable: bool):
+        with self.lock:
+            if enable == self.auto_tracking:
+                return
+            self.auto_tracking = enable
+            if enable:
+                self.ref_frame = None
+                self.tracking_status = "calibrating"
+                self.calib_g = np.array([0.2, 0.0])
+                self.calib_state = "learning"
+                self.calib_updates = 0
+                self.calib_nudged = False
+                self.last_tracking_time = 0.0
+                event_logger.log("Auto-tracking enabled.")
+            else:
+                self.tracking_status = "inactive"
+                self.ref_frame = None
+                event_logger.log("Auto-tracking disabled.")
+
+    def get_tracking_status(self):
+        with self.lock:
+            d_mag = np.linalg.norm(self.tracking_drift)
+            g_mag = np.linalg.norm(self.calib_g)
+            ra_ratio = 0.0
+            if d_mag > 0.01 and g_mag > 0.01:
+                d_ra = np.dot(self.tracking_drift, self.calib_g) / g_mag
+                ra_ratio = float(abs(d_ra) / d_mag)
+                ra_ratio = min(max(ra_ratio, 0.0), 1.0)
+
+            # Return raw diurnal drift parameters directly to the UI
+            sim_drift_speed = self.sim_drift_speed
+            sim_drift_angle = float(np.rad2deg(self.sim_drift_angle) % 360.0)
+
+            return {
+                "active": self.auto_tracking,
+                "status": self.tracking_status,
+                "drift_x": round(self.tracking_drift[0], 2),
+                "drift_y": round(self.tracking_drift[1], 2),
+                "ra_drift": round(self.ra_drift, 3),
+                "dec_drift": round(self.dec_drift, 3),
+                "ra_ratio": round(ra_ratio, 3),
+                "sim_drift_speed": round(sim_drift_speed, 2),
+                "sim_drift_angle": round(sim_drift_angle, 1),
+                "sim_camera_angle": round(np.rad2deg(self.camera_angle) % 360.0, 1),
+                "calib_angle": round(np.rad2deg(np.arctan2(self.calib_g[1], self.calib_g[0])) % 360.0, 1) if np.linalg.norm(self.calib_g) > 0.01 else 0.0,
+                "calib_magnitude": round(np.linalg.norm(self.calib_g), 2),
+                "calib_state": self.calib_state
+            }
+
+    def _update_tracking(self, frame):
+        now = time.time()
+        if self.ref_frame is None:
+            self.ref_frame = frame.copy()
+            self.ref_time = now
+            self.last_tracking_time = now
+            self.last_u = self.current_duty
+            self.last_d = np.array([0.0, 0.0])
+            self.last_v = np.array([0.0, 0.0])
+            self.tracking_drift = [0.0, 0.0]
+            self.ra_drift = 0.0
+            self.dec_drift = 0.0
+            self.tracking_status = "calibrating"
+            self.calib_state = "learning"
+            self.calib_updates = 0
+            self.calib_nudged = False
+            event_logger.log("Calibration started. Tracking reference frame locked.")
+            return
+
+        dt = now - self.last_tracking_time
+        if dt < 1.5:
+            return
+
+        # Compute shift
+        from alignment_utils import align_images
+        T = align_images(self.ref_frame, frame, translation_only=True)
+        dx = float(T[0, 2])
+        dy = float(T[1, 2])
+
+        # If alignment failed or returned exact identity, skip update to prevent corruption
+        if abs(dx) < 1e-5 and abs(dy) < 1e-5:
+            return
+
+        # Position error d_k (current relative to reference)
+        d_k = np.array([-dx, -dy])
+        self.tracking_drift = [float(d_k[0]), float(d_k[1])]
+
+        # Measured velocity since last update step
+        v_k = (d_k - self.last_d) / dt
+
+        # Continuous calibration update using delta duty cycle and delta velocity
+        delta_u = self.current_duty - self.last_u
+        delta_v = v_k - self.last_v
+
+        if abs(delta_u) > 0.05:
+            # Use high learning rate initially for fast convergence, then lower it for stability
+            if self.calib_state == "learning":
+                alpha = 0.8
+            else:
+                alpha = 0.1
+                
+            reg = 0.005
+            g_update = alpha * (delta_v - self.calib_g * delta_u) * delta_u / (delta_u**2 + reg)
+            self.calib_g += g_update
+
+            # Bound g
+            g_mag = np.linalg.norm(self.calib_g)
+            if g_mag < 0.05:
+                self.calib_g = (self.calib_g / (g_mag + 1e-5)) * 0.05
+            elif g_mag > 50.0:
+                self.calib_g = (self.calib_g / g_mag) * 50.0
+
+            self.calib_updates += 1
+            if self.calib_updates >= 5:
+                self.tracking_status = "tracking"
+                self.calib_state = "converged"
+
+        # Apply calibration nudge if we are still learning and haven't nudged yet
+        if self.calib_state == "learning" and not self.calib_nudged:
+            self.calib_nudged = True
+            nudge = 1.0
+            new_duty = np.clip(self.current_duty + nudge, 0.0, 100.0)
+            event_logger.log(f"Calibration nudge applied (+{nudge}% duty cycle) for excitation.")
+            self.set_motor_speed(float(new_duty), ramp_time=0.2)
+        else:
+            # Standard closed-loop correction
+            g_dir = self.calib_g
+            g_mag_sq = np.dot(g_dir, g_dir)
+
+            if g_mag_sq > 0.01:
+                d_ra = np.dot(d_k, g_dir) / np.sqrt(g_mag_sq)
+                self.ra_drift = float(np.dot(v_k, g_dir) / np.sqrt(g_mag_sq))
+
+                # Dec component
+                d_dec_vec = d_k - (np.dot(d_k, g_dir) / g_mag_sq) * g_dir
+                v_dec_vec = v_k - (np.dot(v_k, g_dir) / g_mag_sq) * g_dir
+                self.dec_drift = float(np.linalg.norm(v_dec_vec))
+
+                # PD-style guiding step: proportional error correction with velocity damping
+                Kp = 0.05
+                Kd = 0.20
+                u_correction = - Kp * (np.dot(d_k, g_dir) / g_mag_sq) - Kd * (np.dot(v_k, g_dir) / g_mag_sq)
+                u_correction = np.clip(u_correction, -0.1, 0.1)
+
+                new_duty = np.clip(self.current_duty + u_correction, 0.0, 100.0)
+                self.set_motor_speed(float(new_duty), ramp_time=0.2)
+            else:
+                self.ra_drift = 0.0
+                self.dec_drift = 0.0
+
+        self.last_u = self.current_duty
+        self.last_v = v_k
+        self.last_d = d_k
+        self.last_tracking_time = now
+
     def close(self):
         self.is_running = False
         self.stop_ramping.set()
         self.sequence_stop_event.set()
+
+    def set_camera_angle(self, angle_deg):
+        with self.lock:
+            self.camera_angle = np.deg2rad(angle_deg % 360.0)
+            self._save_to_config("camera_angle", float(angle_deg % 360.0))
+            # Reset calibration state so the tracking loop has to re-learn the new angle!
+            self.calib_state = "learning"
+            self.calib_updates = 0
+            self.calib_nudged = False
+            self.tracking_status = "calibrating"
+            event_logger.log(f"Mock Camera Rotation Angle set to {angle_deg:.1f}°. Re-calibrating tracking.")
+        return True
+
+    def set_sim_drift(self, speed, angle_deg):
+        with self.lock:
+            self.sim_drift_speed = float(speed)
+            self.sim_drift_angle = np.deg2rad(angle_deg % 360.0)
+            self._save_to_config("sim_drift_speed", float(speed))
+            self._save_to_config("sim_drift_angle", float(angle_deg % 360.0))
+            # Reset calibration state as the sky drift speed/direction changed
+            self.calib_state = "learning"
+            self.calib_updates = 0
+            self.calib_nudged = False
+            self.tracking_status = "calibrating"
+            event_logger.log(f"Mock Sim Drift set to: speed={speed:.1f} px/s, angle={angle_deg:.1f}°. Re-calibrating tracking.")
+        return True
+
+    def _save_to_config(self, key, value):
+        import json
+        config_data = {}
+        if os.path.exists("config.json"):
+            try:
+                with open("config.json", "r") as f:
+                    config_data = json.load(f)
+            except Exception:
+                pass
+        config_data[key] = value
+        try:
+            with open("config.json", "w") as f:
+                json.dump(config_data, f)
+        except Exception:
+            pass

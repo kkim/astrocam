@@ -42,5 +42,20 @@ class BaseAstroRig(ABC):
         pass
 
     @abstractmethod
+    def set_auto_tracking(self, enable: bool):
+        pass
+
+    @abstractmethod
+    def get_tracking_status(self):
+        pass
+
+    @abstractmethod
     def close(self):
         pass
+
+    def set_camera_angle(self, angle_deg):
+        return False
+
+    def set_sim_drift(self, speed, angle_deg):
+        return False
+

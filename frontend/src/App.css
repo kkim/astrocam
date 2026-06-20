@@ -9,6 +9,7 @@
   --accent-purple: #aa3bff;
   --success: #238636;
   --danger: #da3633;
+  --warning: #d29922;
 }
 
 body, html, #root {
@@ -99,7 +100,7 @@ body, html, #root {
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid var(--border-color);
-  aspect-ratio: 16/9;
+  aspect-ratio: 8/9;
   margin-bottom: 24px;
 }
 
@@ -168,7 +169,7 @@ body, html, #root {
 /* Gallery Styles */
 .captures-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   padding: 16px;
   overflow-y: auto;
@@ -432,4 +433,71 @@ input[type="number"] {
   .layout-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.tracking-telemetry {
+  background: var(--bg-dark);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px;
+  margin-top: 12px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tracking-telemetry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.tracking-telemetry-row span:first-child {
+  color: var(--text-muted);
+}
+
+.tracking-telemetry-row span:last-child {
+  font-family: monospace;
+  font-weight: 600;
+}
+
+.tracking-alert {
+  background: rgba(218, 54, 51, 0.15);
+  border: 1px solid var(--danger);
+  color: #ff7b72;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.tracking-warning {
+  background: rgba(210, 153, 34, 0.15);
+  border: 1px solid var(--warning);
+  color: #f0b73f;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.btn-tracking {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--bg-panel);
+  color: white;
+  margin-top: 10px;
+  transition: all 0.2s;
+}
+
+.btn-tracking.active {
+  background: var(--success);
+  border-color: var(--success);
 }

@@ -54,6 +54,23 @@ class RealAstroRig(BaseAstroRig):
         if not os.path.exists(self.sequence_info["directory"]):
             os.makedirs(self.sequence_info["directory"])
 
+        # Tracking State
+        self.auto_tracking = False
+        self.tracking_status = "inactive"
+        self.ref_frame = None
+        self.tracking_drift = [0.0, 0.0]
+        self.ra_drift = 0.0
+        self.dec_drift = 0.0
+        self.calib_g = np.array([-0.2, 0.0]) # default guess with negative feedback sign
+        self.calib_state = "learning"
+        self.calib_updates = 0
+        self.calib_nudged = False
+        self.last_tracking_time = 0.0
+        self.last_u = 0.0
+        self.last_d = np.array([0.0, 0.0])
+        self.last_v = np.array([0.0, 0.0])
+
+        self.raw_frame = None
         self._last_error_log_time = 0
         self._init_camera()
         self._init_motor()
@@ -101,6 +118,7 @@ class RealAstroRig(BaseAstroRig):
 
     def _process_frame(self, frame):
         with self.lock:
+            self.raw_frame = frame
             if self.n_avg <= 1:
                 self.latest_frame = frame
                 self.acc_frame = None
@@ -119,6 +137,10 @@ class RealAstroRig(BaseAstroRig):
                 self._frame_count = 0
                 self._last_fps_calc_time = now
 
+        # Run tracking update outside the lock
+        if self.auto_tracking:
+            self._update_tracking(self.latest_frame)
+
     def get_frame(self):
         with self.lock:
             if self.latest_frame is None: return None
@@ -130,8 +152,8 @@ class RealAstroRig(BaseAstroRig):
 
     def get_raw_frame(self):
         with self.lock:
-            if self.latest_frame is None: return None
-            return self.latest_frame.copy()
+            if self.raw_frame is None: return None
+            return self.raw_frame.copy()
 
     def set_camera_param(self, prop, value):
         mapping = {
@@ -227,8 +249,165 @@ class RealAstroRig(BaseAstroRig):
     def get_motor_status(self):
         return {"duty_cycle": round(self.current_duty, 2), "voltage": round(3.3 * (self.current_duty / 100.0), 2), "mock_mode": not HAS_GPIO}
 
+    def set_auto_tracking(self, enable: bool):
+        with self.lock:
+            if enable == self.auto_tracking:
+                return
+            self.auto_tracking = enable
+            if enable:
+                self.ref_frame = None
+                self.tracking_status = "calibrating"
+                self.calib_g = np.array([-0.2, 0.0])
+                self.calib_state = "learning"
+                self.calib_updates = 0
+                self.calib_nudged = False
+                self.last_tracking_time = 0.0
+                event_logger.log("Auto-tracking enabled.")
+            else:
+                self.tracking_status = "inactive"
+                self.ref_frame = None
+                event_logger.log("Auto-tracking disabled.")
+
+    def get_tracking_status(self):
+        with self.lock:
+            d_mag = np.linalg.norm(self.tracking_drift)
+            g_mag = np.linalg.norm(self.calib_g)
+            ra_ratio = 0.0
+            if d_mag > 0.01 and g_mag > 0.01:
+                d_ra = np.dot(self.tracking_drift, self.calib_g) / g_mag
+                ra_ratio = float(abs(d_ra) / d_mag)
+                ra_ratio = min(max(ra_ratio, 0.0), 1.0)
+
+            return {
+                "active": self.auto_tracking,
+                "status": self.tracking_status,
+                "drift_x": round(self.tracking_drift[0], 2),
+                "drift_y": round(self.tracking_drift[1], 2),
+                "ra_drift": round(self.ra_drift, 3),
+                "dec_drift": round(self.dec_drift, 3),
+                "ra_ratio": round(ra_ratio, 3),
+                "sim_drift_speed": None,
+                "sim_drift_angle": None,
+                "sim_camera_angle": None,
+                "calib_angle": round(np.rad2deg(np.arctan2(self.calib_g[1], self.calib_g[0])) % 360.0, 1) if np.linalg.norm(self.calib_g) > 0.01 else 0.0,
+                "calib_magnitude": round(np.linalg.norm(self.calib_g), 2),
+                "calib_state": self.calib_state
+            }
+
+    def _update_tracking(self, frame):
+        now = time.time()
+        if self.ref_frame is None:
+            self.ref_frame = frame.copy()
+            self.ref_time = now
+            self.last_tracking_time = now
+            self.last_u = self.current_duty
+            self.last_d = np.array([0.0, 0.0])
+            self.last_v = np.array([0.0, 0.0])
+            self.tracking_drift = [0.0, 0.0]
+            self.ra_drift = 0.0
+            self.dec_drift = 0.0
+            self.tracking_status = "calibrating"
+            self.calib_state = "learning"
+            self.calib_updates = 0
+            self.calib_nudged = False
+            event_logger.log("Calibration started. Tracking reference frame locked.")
+            return
+
+        dt = now - self.last_tracking_time
+        if dt < 1.5:
+            return
+
+        # Compute shift
+        from alignment_utils import align_images
+        T = align_images(self.ref_frame, frame, translation_only=True)
+        dx = float(T[0, 2])
+        dy = float(T[1, 2])
+
+        # If alignment failed or returned exact identity, skip update to prevent corruption
+        if abs(dx) < 1e-5 and abs(dy) < 1e-5:
+            return
+
+        # Position error d_k (current relative to reference)
+        d_k = np.array([-dx, -dy])
+        self.tracking_drift = [float(d_k[0]), float(d_k[1])]
+
+        # Measured velocity since last update step
+        v_k = (d_k - self.last_d) / dt
+
+        # Continuous calibration update using delta duty cycle and delta velocity
+        delta_u = self.current_duty - self.last_u
+        delta_v = v_k - self.last_v
+
+        if abs(delta_u) > 0.05:
+            # Use high learning rate initially for fast convergence, then lower it for stability
+            if self.calib_state == "learning":
+                alpha = 0.8
+            else:
+                alpha = 0.1
+                
+            reg = 0.005
+            g_update = alpha * (delta_v - self.calib_g * delta_u) * delta_u / (delta_u**2 + reg)
+            self.calib_g += g_update
+
+            # Bound g
+            g_mag = np.linalg.norm(self.calib_g)
+            if g_mag < 0.05:
+                self.calib_g = (self.calib_g / (g_mag + 1e-5)) * 0.05
+            elif g_mag > 50.0:
+                self.calib_g = (self.calib_g / g_mag) * 50.0
+
+            self.calib_updates += 1
+            if self.calib_updates >= 5:
+                self.tracking_status = "tracking"
+                self.calib_state = "converged"
+
+        # Apply calibration nudge if we are still learning and haven't nudged yet
+        if self.calib_state == "learning" and not self.calib_nudged:
+            self.calib_nudged = True
+            nudge = 1.0
+            new_duty = np.clip(self.current_duty + nudge, 0.0, 100.0)
+            event_logger.log(f"Calibration nudge applied (+{nudge}% duty cycle) for excitation.")
+            self.set_motor_speed(float(new_duty), ramp_time=0.2)
+        else:
+            # Standard closed-loop correction
+            g_dir = self.calib_g
+            g_mag_sq = np.dot(g_dir, g_dir)
+
+            if g_mag_sq > 0.01:
+                d_ra = np.dot(d_k, g_dir) / np.sqrt(g_mag_sq)
+                self.ra_drift = float(np.dot(v_k, g_dir) / np.sqrt(g_mag_sq))
+
+                # Dec component
+                d_dec_vec = d_k - (np.dot(d_k, g_dir) / g_mag_sq) * g_dir
+                v_dec_vec = v_k - (np.dot(v_k, g_dir) / g_mag_sq) * g_dir
+                self.dec_drift = float(np.linalg.norm(v_dec_vec))
+
+                # PD-style guiding step: proportional error correction with velocity damping
+                Kp = 0.05
+                Kd = 0.20
+                u_correction = - Kp * (np.dot(d_k, g_dir) / g_mag_sq) - Kd * (np.dot(v_k, g_dir) / g_mag_sq)
+                u_correction = np.clip(u_correction, -0.1, 0.1)
+
+                new_duty = np.clip(self.current_duty + u_correction, 0.0, 100.0)
+                self.set_motor_speed(float(new_duty), ramp_time=0.2)
+            else:
+                self.ra_drift = 0.0
+                self.dec_drift = 0.0
+
+        self.last_u = self.current_duty
+        self.last_v = v_k
+        self.last_d = d_k
+        self.last_tracking_time = now
+
     def close(self):
         self.is_running = False
         self.stop_ramping.set(); self.sequence_stop_event.set()
         if self.cap: self.cap.release()
         if self.pin: self.pin.value = 0; self.pin.close()
+
+    def set_camera_angle(self, angle_deg):
+        return False
+
+    def set_sim_drift(self, speed, angle_deg):
+        return False
+

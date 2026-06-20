@@ -15,6 +15,22 @@ interface Controls {
   auto_exposure: number;
 }
 
+interface TrackingStatus {
+  active: boolean;
+  status: string;
+  drift_x: number;
+  drift_y: number;
+  ra_drift: number;
+  dec_drift: number;
+  ra_ratio: number;
+  sim_drift_speed: number | null;
+  sim_drift_angle: number | null;
+  sim_camera_angle: number | null;
+  calib_angle: number;
+  calib_magnitude: number;
+  calib_state: string;
+}
+
 function App() {
   const [controls, setControls] = useState<Controls>({
     brightness: 128, contrast: 32, saturation: 64, gain: 0,
@@ -26,6 +42,21 @@ function App() {
   const [rigMode, setRigMode] = useState<string>('mock');
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
+  const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>({
+    active: false,
+    status: 'inactive',
+    drift_x: 0,
+    drift_y: 0,
+    ra_drift: 0,
+    dec_drift: 0,
+    ra_ratio: 0,
+    sim_drift_speed: null,
+    sim_drift_angle: null,
+    sim_camera_angle: null,
+    calib_angle: 0,
+    calib_magnitude: 0,
+    calib_state: 'learning'
+  });
   const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0, offset_x: 0, offset_y: 0, offset_angle: 0 });
   const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0, auto_align: true });
   const [health, setHealth] = useState({
@@ -64,6 +95,9 @@ function App() {
             const data = await rRes.json();
             setRigMode(data.mode);
         }
+
+        const tRes = await fetch(`${API_BASE}/tracking/status`);
+        if (tRes.ok) setTrackingStatus(await tRes.json());
       } catch (err) {
         console.error("Fetch error:", err);
       }
@@ -107,6 +141,24 @@ function App() {
     (window as any).motorTimeout = setTimeout(() => setIsAdjustingMotor(false), 2000);
   };
 
+  const updateCameraAngle = (angle: number) => {
+    setTrackingStatus(prev => ({ ...prev, sim_camera_angle: angle }));
+    fetch(`${API_BASE}/mock/camera_angle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ angle })
+    }).catch(e => console.error("Error setting camera angle:", e));
+  };
+
+  const updateSimDrift = (speed: number, angle: number) => {
+    setTrackingStatus(prev => ({ ...prev, sim_drift_speed: speed, sim_drift_angle: angle }));
+    fetch(`${API_BASE}/mock/sim_drift`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speed, angle })
+    }).catch(e => console.error("Error setting sim drift:", e));
+  };
+
   const handleSwitchRig = (mode: string) => {
     setStatus(`Switching to ${mode}...`);
     fetch(`${API_BASE}/rig`, {
@@ -147,6 +199,25 @@ function App() {
     fetch(`${API_BASE}/panorama/stop`, {
       method: 'POST'
     }).then(() => setStatus('Ready'))
+      .catch(e => setStatus(`Error: ${e.message}`));
+  };
+
+  const handleToggleTracking = () => {
+    const nextState = !trackingStatus.active;
+    setStatus(nextState ? 'Enabling auto-tracking...' : 'Disabling auto-tracking...');
+    fetch(`${API_BASE}/tracking/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable: nextState })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setTrackingStatus(prev => ({ ...prev, active: nextState }));
+          setStatus(nextState ? 'Auto-tracking enabled' : 'Auto-tracking disabled');
+          setTimeout(() => setStatus('Ready'), 2000);
+        }
+      })
       .catch(e => setStatus(`Error: ${e.message}`));
   };
 
@@ -210,6 +281,72 @@ function App() {
 
         <div className="sidebar-scroll">
           <div className="control-section">
+            <div className="section-header"><Camera size={16} /> Engine</div>
+            <div className="rig-toggle">
+              <button className={rigMode === 'mock' ? 'active' : ''} onClick={() => handleSwitchRig('mock')}>Mock</button>
+              <button className={rigMode === 'real' ? 'active' : ''} onClick={() => handleSwitchRig('real')}>Real</button>
+            </div>
+          </div>
+
+          {rigMode === 'mock' && (
+            <div className="control-section" style={{ marginTop: '-12px' }}>
+              <div className="tracking-telemetry" style={{ marginTop: '0px', background: 'rgba(88, 166, 255, 0.05)', borderColor: 'rgba(88, 166, 255, 0.15)' }}>
+                {trackingStatus.sim_drift_speed !== null && (
+                  <div className="control-group" style={{ marginBottom: '8px' }}>
+                    <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
+                      <span>Sim Drift Speed:</span>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{trackingStatus.sim_drift_speed.toFixed(1)} px/s</span>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="0" 
+                      max="100" 
+                      step="0.5" 
+                      value={trackingStatus.sim_drift_speed} 
+                      onChange={e => updateSimDrift(parseFloat(e.target.value), trackingStatus.sim_drift_angle || 0)}
+                      style={{ marginTop: '4px' }}
+                    />
+                  </div>
+                )}
+                {trackingStatus.sim_drift_angle !== null && (
+                  <div className="control-group" style={{ marginBottom: '8px' }}>
+                    <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
+                      <span>Sim Drift Angle:</span>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{trackingStatus.sim_drift_angle.toFixed(0)}°</span>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="0" 
+                      max="359" 
+                      step="1" 
+                      value={trackingStatus.sim_drift_angle} 
+                      onChange={e => updateSimDrift(trackingStatus.sim_drift_speed || 0, parseInt(e.target.value))}
+                      style={{ marginTop: '4px' }}
+                    />
+                  </div>
+                )}
+                {trackingStatus.sim_camera_angle !== null && (
+                  <div className="control-group" style={{ marginBottom: '0px' }}>
+                    <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
+                      <span>Diurnal Rot Angle (Camera PA):</span>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{trackingStatus.sim_camera_angle.toFixed(0)}°</span>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="0" 
+                      max="359" 
+                      step="1" 
+                      value={trackingStatus.sim_camera_angle} 
+                      onChange={e => updateCameraAngle(parseInt(e.target.value))}
+                      style={{ marginTop: '4px' }}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="control-section">
             <div className="section-header"><Zap size={16} /> Mount</div>
             <div className="control-group">
               <label>Duty Cycle: {(motorStatus.duty_cycle || 0).toFixed(1)}%</label>
@@ -218,6 +355,54 @@ function App() {
                 <button onClick={() => updateMotorSpeed(85.0)}>Sidereal</button>
                 <button onClick={() => updateMotorSpeed(0)}>Stop</button>
               </div>
+
+              <button 
+                className={`btn-tracking ${trackingStatus.active ? 'active' : ''}`} 
+                onClick={handleToggleTracking}
+              >
+                {trackingStatus.active ? 'Disable Auto-Tracking' : 'Enable Auto-Tracking'}
+              </button>
+
+              {trackingStatus.active && (
+                <div className="tracking-telemetry">
+                  <div className="tracking-telemetry-row">
+                    <span>Status:</span>
+                    <span style={{ color: trackingStatus.status === 'tracking' ? '#238636' : '#dbab09' }}>
+                      {trackingStatus.status === 'tracking' ? 'Locked' : 'Calibrating...'}
+                    </span>
+                  </div>
+                  <div className="tracking-telemetry-row">
+                    <span>Drift X, Y:</span>
+                    <span>{trackingStatus.drift_x.toFixed(1)}px, {trackingStatus.drift_y.toFixed(1)}px</span>
+                  </div>
+                  <div className="tracking-telemetry-row">
+                    <span>RA Drift:</span>
+                    <span>
+                      {Math.abs(trackingStatus.ra_drift) > 0.15 && (
+                        <span style={{ color: '#ff7b72', marginRight: '6px', fontSize: '10px' }}>(too high)</span>
+                      )}
+                      {trackingStatus.ra_drift.toFixed(3)} px/s
+                    </span>
+                  </div>
+                  <div className="tracking-telemetry-row">
+                    <span>Dec Drift:</span>
+                    <span>
+                      {trackingStatus.dec_drift > 0.15 && (
+                        <span style={{ color: '#ff7b72', marginRight: '6px', fontSize: '10px' }}>(too high)</span>
+                      )}
+                      {trackingStatus.dec_drift.toFixed(3)} px/s
+                    </span>
+                  </div>
+                  <div className="tracking-telemetry-row">
+                    <span>RA/Total Drift:</span>
+                    <span>{(trackingStatus.ra_ratio * 100).toFixed(0)}%</span>
+                  </div>
+                  <div className="tracking-telemetry-row">
+                    <span>Camera Angle:</span>
+                    <span>{trackingStatus.calib_angle.toFixed(1)}° ({trackingStatus.calib_state})</span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -273,13 +458,6 @@ function App() {
             ))}
           </div>
 
-          <div className="control-section">
-            <div className="section-header"><Camera size={16} /> Engine</div>
-            <div className="rig-toggle">
-              <button className={rigMode === 'mock' ? 'active' : ''} onClick={() => handleSwitchRig('mock')}>Mock</button>
-              <button className={rigMode === 'real' ? 'active' : ''} onClick={() => handleSwitchRig('real')}>Real</button>
-            </div>
-          </div>
         </div>
         
         <div className="sidebar-footer">
