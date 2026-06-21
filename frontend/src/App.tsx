@@ -309,35 +309,35 @@ function App() {
           {rigMode === 'mock' && (
             <div className="control-section" style={{ marginTop: '-12px' }}>
               <div className="tracking-telemetry" style={{ marginTop: '0px', background: 'rgba(88, 166, 255, 0.05)', borderColor: 'rgba(88, 166, 255, 0.15)' }}>
-                {trackingStatus.sim_drift_speed !== null && (
+                {trackingStatus.sim_drift_speed != null && (
                   <div className="control-group" style={{ marginBottom: '8px' }}>
                     <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
                       <span>Sim Drift Speed:</span>
-                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{trackingStatus.sim_drift_speed.toFixed(1)} px/s</span>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{(trackingStatus.sim_drift_speed ?? 0).toFixed(1)} px/s</span>
                     </label>
                     <input 
                       type="range" 
                       min="0" 
                       max="100" 
                       step="0.5" 
-                      value={trackingStatus.sim_drift_speed} 
+                      value={trackingStatus.sim_drift_speed ?? 0} 
                       onChange={e => updateSimDrift(parseFloat(e.target.value), trackingStatus.sim_drift_angle || 0)}
                       style={{ marginTop: '4px' }}
                     />
                   </div>
                 )}
-                {trackingStatus.sim_camera_angle !== null && (
+                {trackingStatus.sim_camera_angle != null && (
                   <div className="control-group" style={{ marginBottom: '0px' }}>
                     <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
                       <span>Diurnal Rot Angle (Camera PA):</span>
-                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{trackingStatus.sim_camera_angle.toFixed(0)}°</span>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{(trackingStatus.sim_camera_angle ?? 0).toFixed(0)}°</span>
                     </label>
                     <input 
                       type="range" 
                       min="0" 
                       max="359" 
                       step="1" 
-                      value={trackingStatus.sim_camera_angle} 
+                      value={trackingStatus.sim_camera_angle ?? 0} 
                       onChange={e => updateCameraAngle(parseInt(e.target.value))}
                       style={{ marginTop: '4px' }}
                     />
@@ -376,15 +376,15 @@ function App() {
               <div className="tracking-telemetry">
                 <div className="tracking-telemetry-row">
                   <span>Drift XY:</span>
-                  <span>{trackingStatus.drift_x.toFixed(1)}px, {trackingStatus.drift_y.toFixed(1)}px</span>
+                  <span>{(trackingStatus.drift_x ?? 0).toFixed(1)}px, {(trackingStatus.drift_y ?? 0).toFixed(1)}px</span>
                 </div>
                 <div className="tracking-telemetry-row">
                   <span>Drift Speed:</span>
-                  <span>{trackingStatus.drift_speed.toFixed(3)} px/s</span>
+                  <span>{(trackingStatus.drift_speed ?? 0).toFixed(3)} px/s</span>
                 </div>
                 <div className="tracking-telemetry-row">
                   <span>Camera PA:</span>
-                  <span>{trackingStatus.camera_pa.toFixed(1)}°</span>
+                  <span>{(trackingStatus.camera_pa ?? 0).toFixed(1)}°</span>
                 </div>
               </div>
             </div>
