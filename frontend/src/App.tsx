@@ -308,23 +308,6 @@ function App() {
                     />
                   </div>
                 )}
-                {trackingStatus.sim_drift_angle !== null && (
-                  <div className="control-group" style={{ marginBottom: '8px' }}>
-                    <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
-                      <span>Sim Drift Angle:</span>
-                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{trackingStatus.sim_drift_angle.toFixed(0)}°</span>
-                    </label>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="359" 
-                      step="1" 
-                      value={trackingStatus.sim_drift_angle} 
-                      onChange={e => updateSimDrift(trackingStatus.sim_drift_speed || 0, parseInt(e.target.value))}
-                      style={{ marginTop: '4px' }}
-                    />
-                  </div>
-                )}
                 {trackingStatus.sim_camera_angle !== null && (
                   <div className="control-group" style={{ marginBottom: '0px' }}>
                     <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>

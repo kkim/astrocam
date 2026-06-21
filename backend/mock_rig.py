@@ -47,7 +47,7 @@ class MockAstroRig(BaseAstroRig):
         self.sim_drift_speed = float(config_data.get("sim_drift_speed", 60.0))
         if self.sim_drift_speed < 30.0:
             self.sim_drift_speed = 60.0 # Upgrade legacy slow settings
-        self.sim_drift_angle = np.deg2rad(config_data.get("sim_drift_angle", 45.0))
+        self.sim_drift_angle = self.camera_angle  # Perfectly aligned to RA axis (perfect polar alignment)
 
         # Generate static starfield
         self.static_starfield = self._generate_static_starfield()
@@ -155,15 +155,18 @@ class MockAstroRig(BaseAstroRig):
     def set_camera_angle(self, angle_deg):
         with self.lock:
             self.camera_angle = np.deg2rad(angle_deg % 360.0)
+            self.sim_drift_angle = self.camera_angle  # Perfectly aligned to RA axis
             self._save_to_config("camera_angle", float(angle_deg % 360.0))
+            self._save_to_config("sim_drift_angle", float(angle_deg % 360.0))
         return True
 
     def set_sim_drift(self, speed, angle_deg):
         with self.lock:
             self.sim_drift_speed = float(speed)
-            self.sim_drift_angle = np.deg2rad(angle_deg % 360.0)
+            # Drift angle is locked to the mount's RA axis (camera angle) under perfect polar alignment
+            self.sim_drift_angle = self.camera_angle
             self._save_to_config("sim_drift_speed", float(speed))
-            self._save_to_config("sim_drift_angle", float(angle_deg % 360.0))
+            self._save_to_config("sim_drift_angle", float(np.rad2deg(self.camera_angle)))
         return True
 
     def _save_to_config(self, key, value):
