@@ -272,6 +272,18 @@ input[type="range"] {
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.preset-row button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  font-weight: 600;
+}
+
+.preset-row button:hover:not(.active) {
+  background: var(--border-color);
 }
 
 .panorama-config {

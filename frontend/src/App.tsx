@@ -202,23 +202,42 @@ function App() {
       .catch(e => setStatus(`Error: ${e.message}`));
   };
 
-  const handleToggleTracking = () => {
-    const nextState = !trackingStatus.active;
-    setStatus(nextState ? 'Enabling auto-tracking...' : 'Disabling auto-tracking...');
-    fetch(`${API_BASE}/tracking/toggle`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enable: nextState })
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          setTrackingStatus(prev => ({ ...prev, active: nextState }));
-          setStatus(nextState ? 'Auto-tracking enabled' : 'Auto-tracking disabled');
-          setTimeout(() => setStatus('Ready'), 2000);
-        }
-      })
-      .catch(e => setStatus(`Error: ${e.message}`));
+  const setMountMode = (mode: 'off' | 'on' | 'auto') => {
+    if (mode === 'auto') {
+      if (!trackingStatus.active) {
+        setStatus('Enabling auto-tracking...');
+        fetch(`${API_BASE}/tracking/toggle`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enable: true })
+        }).then(res => res.json()).then(data => {
+          if (data.success) {
+            setTrackingStatus(prev => ({ ...prev, active: true }));
+            setStatus('Auto-tracking enabled');
+            setTimeout(() => setStatus('Ready'), 2000);
+          }
+        }).catch(e => setStatus(`Error: ${e.message}`));
+      }
+    } else {
+      const targetSpeed = mode === 'on' ? 85.0 : 0.0;
+      if (trackingStatus.active) {
+        setStatus('Disabling auto-tracking...');
+        fetch(`${API_BASE}/tracking/toggle`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enable: false })
+        }).then(res => res.json()).then(data => {
+          if (data.success) {
+            setTrackingStatus(prev => ({ ...prev, active: false }));
+            updateMotorSpeed(targetSpeed);
+            setStatus(mode === 'on' ? 'Tracking enabled (Sidereal)' : 'Mount stopped');
+            setTimeout(() => setStatus('Ready'), 2000);
+          }
+        }).catch(e => setStatus(`Error: ${e.message}`));
+      } else {
+        updateMotorSpeed(targetSpeed);
+      }
+    }
   };
 
   return (
@@ -335,16 +354,25 @@ function App() {
               <label>Duty Cycle: {(motorStatus.duty_cycle || 0).toFixed(1)}%</label>
               <input type="range" min="0" max="100" step="0.2" value={motorStatus.duty_cycle || 0} onChange={(e) => updateMotorSpeed(parseFloat(e.target.value))} />
               <div className="preset-row">
-                <button onClick={() => updateMotorSpeed(85.0)}>Sidereal</button>
-                <button onClick={() => updateMotorSpeed(0)}>Stop</button>
+                <button 
+                  className={(!trackingStatus.active && (motorStatus.duty_cycle || 0) === 0) ? 'active' : ''} 
+                  onClick={() => setMountMode('off')}
+                >
+                  OFF
+                </button>
+                <button 
+                  className={(!trackingStatus.active && (motorStatus.duty_cycle || 0) > 0) ? 'active' : ''} 
+                  onClick={() => setMountMode('on')}
+                >
+                  ON
+                </button>
+                <button 
+                  className={trackingStatus.active ? 'active' : ''} 
+                  onClick={() => setMountMode('auto')}
+                >
+                  AUTO
+                </button>
               </div>
-
-              <button 
-                className={`btn-tracking ${trackingStatus.active ? 'active' : ''}`} 
-                onClick={handleToggleTracking}
-              >
-                {trackingStatus.active ? 'Disable Auto-Tracking' : 'Enable Auto-Tracking'}
-              </button>
 
               {trackingStatus.active && (
                 <div className="tracking-telemetry">
