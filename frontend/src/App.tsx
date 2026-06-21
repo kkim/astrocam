@@ -42,6 +42,7 @@ function App() {
   const [rigMode, setRigMode] = useState<string>('mock');
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
+  const [prevDuty, setPrevDuty] = useState<number>(85.0);
   const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>({
     active: false,
     status: 'inactive',
@@ -79,7 +80,13 @@ function App() {
         if (cRes.ok) setControls(await cRes.json());
 
         const mRes = await fetch(`${API_BASE}/motor/status`);
-        if (mRes.ok && !isAdjustingMotor) setMotorStatus(await mRes.json());
+        if (mRes.ok && !isAdjustingMotor) {
+          const data = await mRes.json();
+          setMotorStatus(data);
+          if (data.duty_cycle > 0) {
+            setPrevDuty(data.duty_cycle);
+          }
+        }
 
         const pRes = await fetch(`${API_BASE}/panorama/status`);
         if (pRes.ok) setPanoramaStatus(await pRes.json());
@@ -130,6 +137,9 @@ function App() {
   const updateMotorSpeed = (speed: number) => {
     setIsAdjustingMotor(true);
     setMotorStatus(prev => ({ ...prev, duty_cycle: speed, voltage: (3.3 * speed) / 100 }));
+    if (speed > 0) {
+      setPrevDuty(speed);
+    }
     fetch(`${API_BASE}/motor/speed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -219,7 +229,7 @@ function App() {
         }).catch(e => setStatus(`Error: ${e.message}`));
       }
     } else {
-      const targetSpeed = mode === 'on' ? 85.0 : 0.0;
+      const targetSpeed = mode === 'on' ? prevDuty : 0.0;
       if (trackingStatus.active) {
         setStatus('Disabling auto-tracking...');
         fetch(`${API_BASE}/tracking/toggle`, {
@@ -230,7 +240,7 @@ function App() {
           if (data.success) {
             setTrackingStatus(prev => ({ ...prev, active: false }));
             updateMotorSpeed(targetSpeed);
-            setStatus(mode === 'on' ? 'Tracking enabled (Sidereal)' : 'Mount stopped');
+            setStatus(mode === 'on' ? `Tracking restored to ${targetSpeed.toFixed(1)}%` : 'Mount stopped');
             setTimeout(() => setStatus('Ready'), 2000);
           }
         }).catch(e => setStatus(`Error: ${e.message}`));
