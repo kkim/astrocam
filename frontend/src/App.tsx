@@ -17,18 +17,13 @@ interface Controls {
 
 interface TrackingStatus {
   active: boolean;
-  status: string;
   drift_x: number;
   drift_y: number;
-  ra_drift: number;
-  dec_drift: number;
-  ra_ratio: number;
+  drift_speed: number;
+  camera_pa: number;
   sim_drift_speed: number | null;
   sim_drift_angle: number | null;
   sim_camera_angle: number | null;
-  calib_angle: number;
-  calib_magnitude: number;
-  calib_state: string;
 }
 
 function App() {
@@ -45,18 +40,13 @@ function App() {
   const [prevDuty, setPrevDuty] = useState<number>(85.0);
   const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>({
     active: false,
-    status: 'inactive',
     drift_x: 0,
     drift_y: 0,
-    ra_drift: 0,
-    dec_drift: 0,
-    ra_ratio: 0,
+    drift_speed: 0,
+    camera_pa: 0,
     sim_drift_speed: null,
     sim_drift_angle: null,
-    sim_camera_angle: null,
-    calib_angle: 0,
-    calib_magnitude: 0,
-    calib_state: 'learning'
+    sim_camera_angle: null
   });
   const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0, offset_x: 0, offset_y: 0, offset_angle: 0 });
   const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0, auto_align: true });
@@ -383,46 +373,20 @@ function App() {
                 </button>
               </div>
 
-              {trackingStatus.active && (
-                <div className="tracking-telemetry">
-                  <div className="tracking-telemetry-row">
-                    <span>Status:</span>
-                    <span style={{ color: trackingStatus.status === 'tracking' ? '#238636' : '#dbab09' }}>
-                      {trackingStatus.status === 'tracking' ? 'Locked' : 'Calibrating...'}
-                    </span>
-                  </div>
-                  <div className="tracking-telemetry-row">
-                    <span>Drift X, Y:</span>
-                    <span>{trackingStatus.drift_x.toFixed(1)}px, {trackingStatus.drift_y.toFixed(1)}px</span>
-                  </div>
-                  <div className="tracking-telemetry-row">
-                    <span>RA Drift:</span>
-                    <span>
-                      {Math.abs(trackingStatus.ra_drift) > 0.15 && (
-                        <span style={{ color: '#ff7b72', marginRight: '6px', fontSize: '10px' }}>(too high)</span>
-                      )}
-                      {trackingStatus.ra_drift.toFixed(3)} px/s
-                    </span>
-                  </div>
-                  <div className="tracking-telemetry-row">
-                    <span>Dec Drift:</span>
-                    <span>
-                      {trackingStatus.dec_drift > 0.15 && (
-                        <span style={{ color: '#ff7b72', marginRight: '6px', fontSize: '10px' }}>(too high)</span>
-                      )}
-                      {trackingStatus.dec_drift.toFixed(3)} px/s
-                    </span>
-                  </div>
-                  <div className="tracking-telemetry-row">
-                    <span>RA/Total Drift:</span>
-                    <span>{(trackingStatus.ra_ratio * 100).toFixed(0)}%</span>
-                  </div>
-                  <div className="tracking-telemetry-row">
-                    <span>Camera Angle:</span>
-                    <span>{trackingStatus.calib_angle.toFixed(1)}° ({trackingStatus.calib_state})</span>
-                  </div>
+              <div className="tracking-telemetry">
+                <div className="tracking-telemetry-row">
+                  <span>Drift XY:</span>
+                  <span>{trackingStatus.drift_x.toFixed(1)}px, {trackingStatus.drift_y.toFixed(1)}px</span>
                 </div>
-              )}
+                <div className="tracking-telemetry-row">
+                  <span>Drift Speed:</span>
+                  <span>{trackingStatus.drift_speed.toFixed(3)} px/s</span>
+                </div>
+                <div className="tracking-telemetry-row">
+                  <span>Camera PA:</span>
+                  <span>{trackingStatus.camera_pa.toFixed(1)}°</span>
+                </div>
+              </div>
             </div>
           </div>
 
