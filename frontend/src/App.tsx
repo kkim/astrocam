@@ -17,8 +17,8 @@ interface Controls {
 
 interface TrackingStatus {
   active: boolean;
-  drift_x: number;
-  drift_y: number;
+  drift_speed_x: number;
+  drift_speed_y: number;
   drift_speed: number;
   camera_pa: number;
   sim_drift_speed: number | null;
@@ -40,8 +40,8 @@ function App() {
   const [prevDuty, setPrevDuty] = useState<number>(85.0);
   const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>({
     active: false,
-    drift_x: 0,
-    drift_y: 0,
+    drift_speed_x: 0,
+    drift_speed_y: 0,
     drift_speed: 0,
     camera_pa: 0,
     sim_drift_speed: null,
@@ -375,8 +375,8 @@ function App() {
 
               <div className="tracking-telemetry">
                 <div className="tracking-telemetry-row">
-                  <span>Drift XY:</span>
-                  <span>{(trackingStatus.drift_x ?? 0).toFixed(1)}px, {(trackingStatus.drift_y ?? 0).toFixed(1)}px</span>
+                  <span>Drift Speed XY:</span>
+                  <span>{(trackingStatus.drift_speed_x ?? 0).toFixed(3)}px/s, {(trackingStatus.drift_speed_y ?? 0).toFixed(3)}px/s</span>
                 </div>
                 <div className="tracking-telemetry-row">
                   <span>Drift Speed:</span>

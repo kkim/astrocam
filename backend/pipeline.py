@@ -288,8 +288,8 @@ class AstroPipeline:
             return {
                 "active": self.auto_tracking,
                 "status": self.tracking_status,
-                "drift_x": round(self.tracking_drift[0], 2),
-                "drift_y": round(self.tracking_drift[1], 2),
+                "drift_speed_x": round(self.last_v[0], 3),
+                "drift_speed_y": round(self.last_v[1], 3),
                 "drift_speed": round(v_mag, 3),
                 "camera_pa": round(camera_pa, 1),
                 "sim_drift_speed": sim_drift_speed,
