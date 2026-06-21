@@ -214,20 +214,19 @@ function App() {
 
   const setMountMode = (mode: 'off' | 'on' | 'auto') => {
     if (mode === 'auto') {
-      if (!trackingStatus.active) {
-        setStatus('Enabling auto-tracking...');
-        fetch(`${API_BASE}/tracking/toggle`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enable: true })
-        }).then(res => res.json()).then(data => {
-          if (data.success) {
-            setTrackingStatus(prev => ({ ...prev, active: true }));
-            setStatus('Auto-tracking enabled');
-            setTimeout(() => setStatus('Ready'), 2000);
-          }
-        }).catch(e => setStatus(`Error: ${e.message}`));
-      }
+      const isAlreadyActive = trackingStatus.active;
+      setStatus(isAlreadyActive ? 'Relocking tracking reference...' : 'Enabling auto-tracking...');
+      fetch(`${API_BASE}/tracking/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: true })
+      }).then(res => res.json()).then(data => {
+        if (data.success) {
+          setTrackingStatus(prev => ({ ...prev, active: true }));
+          setStatus(isAlreadyActive ? 'Reference frame relocked' : 'Auto-tracking enabled');
+          setTimeout(() => setStatus('Ready'), 2000);
+        }
+      }).catch(e => setStatus(`Error: ${e.message}`));
     } else {
       const targetSpeed = mode === 'on' ? prevDuty : 0.0;
       if (trackingStatus.active) {

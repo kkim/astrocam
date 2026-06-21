@@ -216,6 +216,12 @@ class AstroPipeline:
         """
         with self.lock:
             if enable == self.auto_tracking:
+                if enable:
+                    self.ref_frame = None
+                    self.tracking_drift = [0.0, 0.0]
+                    self.last_d = np.array([0.0, 0.0])
+                    self.last_v = np.array([0.0, 0.0])
+                    event_logger.log("Auto-tracking reference frame relocked to current view.")
                 return
             self.auto_tracking = enable
             if enable:
