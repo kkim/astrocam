@@ -477,3 +477,29 @@ class AstroPipeline:
         """
         self.is_running = False
         self.sequence_stop_event.set()
+
+
+def update_duty_cycle(history_v, history_u, g):
+    """
+    Computes the next duty cycle u_{t+1} to drive the tracking error (u*g - v) to 0.
+    
+    Args:
+        history_v (list of np.ndarray): History of observed velocity vectors (px/s).
+        history_u (list of float): History of applied duty cycles (%).
+        g (np.ndarray): Calibration gain vector (px/s per % duty cycle).
+        
+    Returns:
+        float: The next duty cycle u_{t+1}.
+    """
+    g_mag_sq = np.dot(g, g)
+    if g_mag_sq < 1e-8:
+        return history_u[-1] if history_u else 80.0
+        
+    # Calculate the ideal duty cycle at each step in the history
+    u_ideals = []
+    for u_k, v_k in zip(history_u, history_v):
+        v_proj = np.dot(v_k, g) / g_mag_sq
+        u_ideal = u_k - v_proj
+        u_ideals.append(u_ideal)
+        
+    return float(np.mean(u_ideals))
