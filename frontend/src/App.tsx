@@ -376,7 +376,7 @@ function App() {
               <div className="tracking-telemetry">
                 <div className="tracking-telemetry-row">
                   <span>Drift Speed XY:</span>
-                  <span>{(trackingStatus.drift_speed_x ?? 0).toFixed(3)}px/s, {(trackingStatus.drift_speed_y ?? 0).toFixed(3)}px/s</span>
+                  <span>{(trackingStatus.drift_speed_x ?? 0).toFixed(1)}, {(trackingStatus.drift_speed_y ?? 0).toFixed(1)}px/s</span>
                 </div>
                 <div className="tracking-telemetry-row">
                   <span>Drift Speed:</span>
