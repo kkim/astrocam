@@ -27,10 +27,12 @@ def test_crosshair_detection_and_drawing():
         pipeline.set_auto_tracking(True)
         assert pipeline.auto_tracking
         
-        # Wait for the next processing step to populate reference frame and stars
-        time.sleep(0.5)
-        
-        # Verify 5 reference stars are detected
+        # Wait up to 3 seconds for the next processing step to populate reference frame and stars
+        start_wait = time.time()
+        while len(pipeline.reference_stars) == 0 and time.time() - start_wait < 3.0:
+            time.sleep(0.1)
+            
+        # Verify reference stars are detected
         assert len(pipeline.reference_stars) > 0
         assert len(pipeline.reference_stars) <= 5
         

@@ -107,6 +107,7 @@ class AstroPipeline:
         self.last_u = 0.0
         self.last_d = np.array([0.0, 0.0])
         self.last_v = np.array([0.0, 0.0])
+        self.inlier_ratio = 0.0
         
         # Calibration rolling history variables
         self.calib_u0 = 80.0
@@ -292,6 +293,7 @@ class AstroPipeline:
                 "drift_speed_y": round(self.last_v[1], 3),
                 "drift_speed": round(v_mag, 3),
                 "camera_pa": round(camera_pa, 1),
+                "inlier_ratio": round(self.inlier_ratio, 3),
                 "sim_drift_speed": sim_drift_speed,
                 "sim_drift_angle": sim_drift_angle,
                 "sim_camera_angle": sim_camera_angle,
@@ -392,17 +394,21 @@ class AstroPipeline:
 
         # Sub-pixel translation alignment (runs outside lock to keep UI responsive)
         if self.auto_tracking:
-            T = align_images(self.ref_frame, frame, translation_only=True)
+            T, metrics = align_images(self.ref_frame, frame, translation_only=True, return_metrics=True)
         else:
-            T = align_images(self.prev_alignment_frame, frame, translation_only=True)
+            T, metrics = align_images(self.prev_alignment_frame, frame, translation_only=True, return_metrics=True)
             
         dx = float(T[0, 2])
         dy = float(T[1, 2])
+        inlier_ratio = metrics["inlier_ratio"]
 
         if abs(dx) < 1e-5 and abs(dy) < 1e-5:
+            with self.lock:
+                self.inlier_ratio = inlier_ratio
             return
 
         with self.lock:
+            self.inlier_ratio = inlier_ratio
             if self.auto_tracking:
                 # Position error d_k (current relative to reference)
                 d_k = np.array([-dx, -dy])

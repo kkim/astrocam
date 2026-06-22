@@ -133,7 +133,7 @@ def match_star_descriptors(des_ref, des_src, stars_ref, stars_src, N=3, max_dist
                 matches.append((stars_src[i], stars_ref[best_idx]))
     return matches
 
-def align_images(img_ref, img_src, nfeatures=100, translation_only=False, s=4):
+def align_images(img_ref, img_src, nfeatures=100, translation_only=False, s=4, return_metrics=False):
     """
     Finds the affine transform M that maps img_src to img_ref using
     our custom Star Neighborhood Descriptors.
@@ -167,7 +167,10 @@ def align_images(img_ref, img_src, nfeatures=100, translation_only=False, s=4):
     
     if len(matches) < 3:
         # Fall back to identity if not enough matches
-        return np.eye(2, 3, dtype=np.float32)
+        M = np.eye(2, 3, dtype=np.float32)
+        if return_metrics:
+            return M, {"inlier_ratio": 0.0}
+        return M
         
     src_pts = np.float32([m[0] for m in matches]).reshape(-1, 1, 2)
     ref_pts = np.float32([m[1] for m in matches]).reshape(-1, 1, 2)
@@ -175,6 +178,9 @@ def align_images(img_ref, img_src, nfeatures=100, translation_only=False, s=4):
     if translation_only:
         # Run RANSAC to find consensus translation
         M, mask = cv2.estimateAffinePartial2D(src_pts, ref_pts, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+        inliers = int(np.sum(mask)) if mask is not None else 0
+        inlier_ratio = float(inliers / len(matches)) if len(matches) > 0 else 0.0
+
         if M is not None and mask is not None and np.sum(mask) >= 3:
             inliers_src = src_pts[mask.ravel() == 1]
             inliers_ref = ref_pts[mask.ravel() == 1]
@@ -193,15 +199,26 @@ def align_images(img_ref, img_src, nfeatures=100, translation_only=False, s=4):
         
         # Sanity check on translation
         if abs(dx) > 100.0 or abs(dy) > 100.0:
-            return np.eye(2, 3, dtype=np.float32)
+            M_final = np.eye(2, 3, dtype=np.float32)
+            if return_metrics:
+                return M_final, {"inlier_ratio": 0.0}
+            return M_final
             
-        return np.float32([[1, 0, dx], [0, 1, dy]])
+        M_final = np.float32([[1, 0, dx], [0, 1, dy]])
+        if return_metrics:
+            return M_final, {"inlier_ratio": inlier_ratio}
+        return M_final
 
     # estimateAffinePartial2D finds Translation, Rotation, and Scale.
     M, mask = cv2.estimateAffinePartial2D(src_pts, ref_pts, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+    inliers = int(np.sum(mask)) if mask is not None else 0
+    inlier_ratio = float(inliers / len(matches)) if len(matches) > 0 else 0.0
     
     if M is None:
-        return np.eye(2, 3, dtype=np.float32)
+        M_final = np.eye(2, 3, dtype=np.float32)
+        if return_metrics:
+            return M_final, {"inlier_ratio": 0.0}
+        return M_final
         
     # Scale up the translation components back to the original image coordinate space
     M[0, 2] *= s
@@ -210,18 +227,30 @@ def align_images(img_ref, img_src, nfeatures=100, translation_only=False, s=4):
     # Sanity checks on the estimated affine matrix.
     scale = np.sqrt(M[0, 0]**2 + M[1, 0]**2)
     if abs(scale - 1.0) > 0.05:
-        return np.eye(2, 3, dtype=np.float32)
+        M_final = np.eye(2, 3, dtype=np.float32)
+        if return_metrics:
+            return M_final, {"inlier_ratio": 0.0}
+        return M_final
         
     angle = np.arctan2(M[1, 0], M[0, 0]) * 180.0 / np.pi
     if abs(angle) > 5.0:
-        return np.eye(2, 3, dtype=np.float32)
+        M_final = np.eye(2, 3, dtype=np.float32)
+        if return_metrics:
+            return M_final, {"inlier_ratio": 0.0}
+        return M_final
         
     dx = M[0, 2]
     dy = M[1, 2]
     if abs(dx) > 100.0 or abs(dy) > 100.0:
-        return np.eye(2, 3, dtype=np.float32)
+        M_final = np.eye(2, 3, dtype=np.float32)
+        if return_metrics:
+            return M_final, {"inlier_ratio": 0.0}
+        return M_final
         
-    return M.astype(np.float32)
+    M_final = M.astype(np.float32)
+    if return_metrics:
+        return M_final, {"inlier_ratio": inlier_ratio}
+    return M_final
 
 def transform_image(img, M, target_shape=None):
     """Applies affine transform M to img."""

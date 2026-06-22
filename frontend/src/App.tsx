@@ -21,6 +21,7 @@ interface TrackingStatus {
   drift_speed_y: number;
   drift_speed: number;
   camera_pa: number;
+  inlier_ratio: number;
   sim_drift_speed: number | null;
   sim_drift_angle: number | null;
   sim_camera_angle: number | null;
@@ -44,6 +45,7 @@ function App() {
     drift_speed_y: 0,
     drift_speed: 0,
     camera_pa: 0,
+    inlier_ratio: 0,
     sim_drift_speed: null,
     sim_drift_angle: null,
     sim_camera_angle: null
@@ -385,6 +387,10 @@ function App() {
                 <div className="tracking-telemetry-row">
                   <span>Camera PA:</span>
                   <span>{(trackingStatus.camera_pa ?? 0).toFixed(1)}°</span>
+                </div>
+                <div className="tracking-telemetry-row">
+                  <span>Match Quality:</span>
+                  <span>{((trackingStatus.inlier_ratio ?? 0) * 100).toFixed(0)}%</span>
                 </div>
               </div>
             </div>
