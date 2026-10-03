@@ -169,6 +169,13 @@ function App() {
     }).catch(e => console.error("Error setting sim drift:", e));
   };
 
+  const showToast = (msg: string, durationMs: number = 2500) => {
+    setStatus(msg);
+    setTimeout(() => {
+      setStatus(prev => (prev === msg ? 'Ready' : prev));
+    }, durationMs);
+  };
+
   const handleSwitchCamera = (mode: 'mock' | 'real') => {
     setStatus(`Switching camera to ${mode}...`);
     fetch(`${API_BASE}/rig`, {
@@ -178,9 +185,9 @@ function App() {
     }).then(res => res.json()).then(data => {
       if (data.success) {
         setCameraEngine(data.camera_mode);
-        setStatus(`Camera set to ${data.camera_mode}`);
+        showToast(`Camera set to ${data.camera_mode}`);
       }
-    }).catch(e => setStatus(`Error: ${e.message}`));
+    }).catch(e => showToast(`Error: ${e.message}`, 4000));
   };
 
   const handleSwitchMount = (mode: 'mock' | 'real') => {
@@ -192,9 +199,9 @@ function App() {
     }).then(res => res.json()).then(data => {
       if (data.success) {
         setMountEngine(data.mount_mode);
-        setStatus(`Mount set to ${data.mount_mode}`);
+        showToast(`Mount set to ${data.mount_mode}`);
       }
-    }).catch(e => setStatus(`Error: ${e.message}`));
+    }).catch(e => showToast(`Error: ${e.message}`, 4000));
   };
 
   const handleReconnectCamera = () => {
@@ -204,12 +211,12 @@ function App() {
       method: 'POST'
     }).then(res => res.json()).then(data => {
       if (data.success) {
-        setStatus('Camera reconnected successfully!');
+        showToast('Camera reconnected successfully!');
       } else {
-        setStatus('Camera reconnect failed: check hardware connection');
+        showToast('Camera reconnect failed: check hardware connection', 4000);
       }
     }).catch(e => {
-      setStatus(`Reconnect error: ${e.message}`);
+      showToast(`Reconnect error: ${e.message}`, 4000);
     }).finally(() => {
       setIsReconnecting(false);
     });
@@ -221,19 +228,18 @@ function App() {
       .then(res => res.json())
       .then(data => {
         if (data.success) {
-          setStatus(`Saved: ${data.filename}`);
-          setTimeout(() => setStatus('Ready'), 3000);
+          showToast(`Saved: ${data.filename}`, 3000);
         }
-      }).catch(e => setStatus(`Error: ${e.message}`));
+      }).catch(e => showToast(`Error: ${e.message}`, 4000));
   };
 
   const handleStartPanorama = () => {
-    setStatus('Starting panorama...');
+    showToast('Starting panorama...', 2000);
     fetch(`${API_BASE}/panorama/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(panoramaConfig)
-    }).catch(e => setStatus(`Error: ${e.message}`));
+    }).catch(e => showToast(`Error: ${e.message}`, 4000));
   };
 
   const handleStopPanorama = () => {
