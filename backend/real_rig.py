@@ -1,149 +1,30 @@
-import cv2
-import threading
-import time
-import numpy as np
-import os
-from base_rig import BaseAstroRig
-from logger import event_logger
+from typing import Optional
+from real_camera import RealCamera
+from real_mount import RealMount, HAS_GPIO
+from composite_rig import CompositeAstroRig
 
-try:
-    from gpiozero import PWMOutputDevice
-    HAS_GPIO = True
-except (ImportError, RuntimeError):
-    HAS_GPIO = False
+class RealAstroRig(CompositeAstroRig):
+    """
+    RealAstroRig bundles physical USB camera capture and physical GPIO motor control.
+    Maintained for direct instantiation and backwards compatibility.
+    """
+    def __init__(self, camera_id: Optional[int] = None, motor_pin: int = 18):
+        camera = RealCamera(camera_id=camera_id)
+        mount = RealMount(motor_pin=motor_pin)
+        super().__init__(camera, mount)
 
-class RealAstroRig(BaseAstroRig):
-    def __init__(self, camera_id=0, motor_pin=18):
-        self.camera_id = camera_id
-        self.motor_pin_number = motor_pin
-        
-        # Camera State
-        self.cap = None
-        self.width, self.height = 1920, 1080
-        self.format = 'MJPG'
-        self.raw_frame = None
-        self.lock = threading.Lock()
-        self.is_running = True
-        self._last_error_log_time = 0
-        
-        self.params = {
-            "brightness": 128, "contrast": 32, "saturation": 64,
-            "gain": 0, "exposure": 156, "sharpness": 2, "auto_exposure": 0
-        }
-        
-        # Motor State
-        self.pin = None
-        self.current_duty = 0.0
-        self.target_duty = 0.0
-        self.ramp_thread = None
-        self.stop_ramping = threading.Event()
-        
-        self._init_camera()
-        self._init_motor()
-        
-        self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self.capture_thread.start()
+    @property
+    def cap(self):
+        return getattr(self.camera, "cap", None)
 
-    def _init_camera(self):
-        if self.cap: self.cap.release()
-        self.cap = cv2.VideoCapture(self.camera_id, cv2.CAP_V4L2)
-        if not self.cap.isOpened():
-            if time.time() - self._last_error_log_time > 10:
-                event_logger.log("Error: Could not open camera hardware")
-                self._last_error_log_time = time.time()
-            with self.lock:
-                self.raw_frame = None
-            return False
-        
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.format))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        return True
+    @property
+    def pin(self):
+        return getattr(self.mount, "pin", None)
 
-    def _init_motor(self):
-        if HAS_GPIO:
-            try:
-                self.pin = PWMOutputDevice(self.motor_pin_number)
-                self.pin.value = 0
-            except Exception as e:
-                event_logger.log(f"Error: Motor init failed: {e}")
+    @property
+    def width(self):
+        return getattr(self.camera, "width", 1920)
 
-    def _capture_loop(self):
-        while self.is_running:
-            if not self.cap or not self.cap.isOpened():
-                time.sleep(1)
-                self._init_camera()
-                continue
-            if self.cap.grab():
-                ret, frame = self.cap.retrieve()
-                if ret and frame is not None:
-                    with self.lock:
-                        self.raw_frame = frame
-            else:
-                time.sleep(0.01)
-
-    def get_raw_frame(self):
-        with self.lock:
-            if self.raw_frame is None: return None
-            return self.raw_frame.copy()
-
-    def set_camera_param(self, prop, value):
-        mapping = {
-            "brightness": cv2.CAP_PROP_BRIGHTNESS, "contrast": cv2.CAP_PROP_CONTRAST,
-            "saturation": cv2.CAP_PROP_SATURATION, "gain": cv2.CAP_PROP_GAIN,
-            "exposure": cv2.CAP_PROP_EXPOSURE, "sharpness": cv2.CAP_PROP_SHARPNESS,
-            "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE
-        }
-        with self.lock:
-            if prop in mapping:
-                self.params[prop] = value
-                if self.cap and self.cap.isOpened():
-                    val = (3 if value > 0 else 1) if prop == "auto_exposure" else value
-                    self.cap.set(mapping[prop], val)
-        return True
-
-    def get_camera_params(self):
-        res = {**self.params}
-        if self.cap and self.cap.isOpened():
-            for p, prop_id in {"brightness": cv2.CAP_PROP_BRIGHTNESS, "exposure": cv2.CAP_PROP_EXPOSURE, "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE}.items():
-                try: 
-                    val = self.cap.get(prop_id)
-                    res[p] = (1 if val >= 3 else 0) if p == "auto_exposure" else val
-                except: pass
-        return res
-
-    def get_camera_status(self):
-        return {"connected": self.cap is not None and self.cap.isOpened(), "width": self.width, "height": self.height}
-
-    def set_motor_speed(self, speed, ramp_time=0.5):
-        self.target_duty = speed
-        if self.ramp_thread and self.ramp_thread.is_alive():
-            self.stop_ramping.set()
-            self.ramp_thread.join()
-        self.stop_ramping.clear()
-        self.ramp_thread = threading.Thread(target=self._ramp_logic, args=(ramp_time,), daemon=True)
-        self.ramp_thread.start()
-        return True
-
-    def _ramp_logic(self, ramp_time):
-        start, end = self.current_duty, self.target_duty
-        steps = 20
-        for i in range(1, steps + 1):
-            if self.stop_ramping.is_set(): break
-            self.current_duty = start + (end - start) * (i / steps)
-            if self.pin: self.pin.value = self.current_duty / 100.0
-            time.sleep(ramp_time / steps)
-        self.current_duty = end
-
-    def get_motor_status(self):
-        return {"duty_cycle": round(self.current_duty, 2), "voltage": round(3.3 * (self.current_duty / 100.0), 2), "mock_mode": not HAS_GPIO}
-
-    def close(self):
-        self.is_running = False
-        self.stop_ramping.set()
-        if self.cap: self.cap.release()
-        if self.pin:
-            self.pin.value = 0
-            self.pin.close()
+    @property
+    def height(self):
+        return getattr(self.camera, "height", 1080)

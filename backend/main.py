@@ -12,6 +12,7 @@ from panorama import PanoramaManager
 from pipeline import AstroPipeline
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from typing import Optional
 import glob
 import json
 
@@ -46,23 +47,31 @@ def load_config():
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                if "camera_mode" not in data:
+                    data["camera_mode"] = data.get("rig_mode", "mock")
+                if "mount_mode" not in data:
+                    data["mount_mode"] = data.get("rig_mode", "mock")
+                return data
         except Exception as e:
             event_logger.log(f"Error loading config: {e}")
-    return {"rig_mode": "real"}
+    return {"camera_mode": "mock", "mount_mode": "mock", "rig_mode": "mock"}
 
 def save_config(config_data):
     try:
+        current = load_config()
+        current.update(config_data)
         with open(CONFIG_PATH, "w") as f:
-            json.dump(config_data, f)
+            json.dump(current, f)
     except Exception as e:
         event_logger.log(f"Error saving config: {e}")
 
 config = load_config()
 
-# Unified AstroRig & Processing Pipeline
-rig_mode = config.get("rig_mode", "real")
-rig = get_astro_rig(rig_mode, 0, 18)
+# Unified AstroRig & Processing Pipeline with decoupled camera and mount
+camera_mode = config.get("camera_mode", "mock")
+mount_mode = config.get("mount_mode", "mock")
+rig = get_astro_rig(camera_mode=camera_mode, mount_mode=mount_mode, motor_pin=18)
 pipeline = AstroPipeline(rig)
 panorama = PanoramaManager(rig)
 
@@ -80,29 +89,57 @@ class MotorSpeedUpdate(BaseModel):
     speed: float
 
 class RigUpdate(BaseModel):
-    mode: str
+    mode: Optional[str] = None
+    camera_mode: Optional[str] = None
+    mount_mode: Optional[str] = None
 
 @app.get("/rig")
 def get_rig_mode():
-    return {"mode": rig_mode}
+    return {
+        "mode": f"{camera_mode}_{mount_mode}",
+        "camera_mode": camera_mode,
+        "mount_mode": mount_mode,
+        "rig_mode": camera_mode if camera_mode == mount_mode else "custom"
+    }
 
 @app.post("/rig")
 def set_rig_mode(update: RigUpdate):
-    global rig, rig_mode, pipeline
-    if update.mode == rig_mode:
-        return {"success": True, "mode": rig_mode}
-    
-    event_logger.log(f"Switching rig mode to: {update.mode}")
+    global rig, camera_mode, mount_mode, pipeline, panorama
+    new_camera_mode = update.camera_mode or (update.mode if update.mode else camera_mode)
+    new_mount_mode = update.mount_mode or (update.mode if update.mode else mount_mode)
+
+    if new_camera_mode == camera_mode and new_mount_mode == mount_mode:
+        return {"success": True, "camera_mode": camera_mode, "mount_mode": mount_mode}
+
+    event_logger.log(f"Switching rig mode: Camera={new_camera_mode.upper()}, Mount={new_mount_mode.upper()}")
     if rig:
         rig.close()
-    
-    rig_mode = update.mode
-    save_config({"rig_mode": rig_mode})
-    
-    rig = get_astro_rig(rig_mode, 0, 18)
+
+    camera_mode = new_camera_mode
+    mount_mode = new_mount_mode
+    save_config({
+        "camera_mode": camera_mode,
+        "mount_mode": mount_mode,
+        "rig_mode": camera_mode if camera_mode == mount_mode else "custom"
+    })
+
+    rig = get_astro_rig(camera_mode=camera_mode, mount_mode=mount_mode, motor_pin=18)
     pipeline.rig = rig
     panorama.rig = rig
-    return {"success": True, "mode": rig_mode}
+    return {"success": True, "camera_mode": camera_mode, "mount_mode": mount_mode}
+
+@app.post("/camera/reconnect")
+def reconnect_camera():
+    global rig
+    if not rig:
+        return {"success": False, "error": "Rig not initialized"}
+    success = False
+    if hasattr(rig, "reconnect_camera"):
+        success = rig.reconnect_camera()
+    elif hasattr(rig, "reconnect"):
+        success = rig.reconnect()
+    status = rig.get_camera_status()
+    return {"success": success, "camera_status": status}
 
 @app.get("/logs")
 def get_logs():
@@ -193,6 +230,8 @@ def get_status():
     status["mean_brightness"] = pipeline.mean_brightness
     motor_status = rig.get_motor_status()
     status["mock_mode"] = motor_status.get("mock_mode", True)
+    status["camera_mode"] = camera_mode
+    status["mount_mode"] = mount_mode
     return status
 
 @app.get("/controls")

@@ -45,14 +45,14 @@ class PanoramaManager:
     def _run_panorama(self):
         event_logger.log(f"Panorama thread started: {self.total_frames} frames")
         try:
-            for i in range(self.total_frames):
+            while self.current_frame < self.total_frames:
                 if not self.is_active: 
                     event_logger.log("Panorama loop cancelled")
                     break
                 frame = self.rig.get_raw_frame()
                 if frame is None:
-                    event_logger.log(f"Panorama: Frame {i} is None!")
-                    time.sleep(1.0)
+                    event_logger.log(f"Panorama: Frame {self.current_frame} is None, waiting...")
+                    time.sleep(0.5)
                     continue
 
                 # Initialize buffers on the first frame
@@ -76,9 +76,9 @@ class PanoramaManager:
                     self.offset_y = float(self.T_cumulative[1, 2])
                     self.offset_angle = float(np.arctan2(self.T_cumulative[1, 0], self.T_cumulative[0, 0]) * 180.0 / np.pi)
                     
-                    if self.prev_frame is not None and i % 5 == 0:
+                    if self.prev_frame is not None and self.current_frame % 5 == 0:
                         T_step = align_images(self.prev_frame, frame, translation_only=True)
-                        event_logger.log(f"Align F{i}: dx={T_step[0, 2]:.1f}, dy={T_step[1, 2]:.1f}, rot={self.offset_angle:.2f}°")
+                        event_logger.log(f"Align F{self.current_frame}: dx={T_step[0, 2]:.1f}, dy={T_step[1, 2]:.1f}, rot={self.offset_angle:.2f}°")
                 else:
                     # Manual drift: manually compose the translation matrix first (for subsequent frames)
                     if self.prev_frame is not None:

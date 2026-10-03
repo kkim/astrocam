@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { Camera, Sliders, Image, Save, Zap, Menu, X, Terminal, Grid, RefreshCw } from 'lucide-react';
+import { Camera, Sliders, Image, Save, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -35,7 +35,9 @@ function App() {
   const [status, setStatus] = useState<string>('Ready');
   const [logs, setLogs] = useState<string[]>([]);
   const [captures, setCaptures] = useState<string[]>([]);
-  const [rigMode, setRigMode] = useState<string>('mock');
+  const [cameraEngine, setCameraEngine] = useState<string>('mock');
+  const [mountEngine, setMountEngine] = useState<string>('mock');
+  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [prevDuty, setPrevDuty] = useState<number>(85.0);
@@ -66,7 +68,12 @@ function App() {
     const fetchData = async () => {
       try {
         const hRes = await fetch(`${API_BASE}/status`);
-        if (hRes.ok) setHealth(await hRes.json());
+        if (hRes.ok) {
+          const hData = await hRes.json();
+          setHealth(hData);
+          if (hData.camera_mode) setCameraEngine(hData.camera_mode);
+          if (hData.mount_mode) setMountEngine(hData.mount_mode);
+        }
 
         const cRes = await fetch(`${API_BASE}/controls`);
         if (cRes.ok) setControls(await cRes.json());
@@ -92,7 +99,8 @@ function App() {
         const rRes = await fetch(`${API_BASE}/rig`);
         if (rRes.ok) {
             const data = await rRes.json();
-            setRigMode(data.mode);
+            if (data.camera_mode) setCameraEngine(data.camera_mode);
+            if (data.mount_mode) setMountEngine(data.mount_mode);
         }
 
         const tRes = await fetch(`${API_BASE}/tracking/status`);
@@ -161,18 +169,50 @@ function App() {
     }).catch(e => console.error("Error setting sim drift:", e));
   };
 
-  const handleSwitchRig = (mode: string) => {
-    setStatus(`Switching to ${mode}...`);
+  const handleSwitchCamera = (mode: 'mock' | 'real') => {
+    setStatus(`Switching camera to ${mode}...`);
     fetch(`${API_BASE}/rig`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode })
+      body: JSON.stringify({ camera_mode: mode })
     }).then(res => res.json()).then(data => {
       if (data.success) {
-        setRigMode(data.mode);
-        setStatus(`Rig set to ${data.mode}`);
+        setCameraEngine(data.camera_mode);
+        setStatus(`Camera set to ${data.camera_mode}`);
       }
     }).catch(e => setStatus(`Error: ${e.message}`));
+  };
+
+  const handleSwitchMount = (mode: 'mock' | 'real') => {
+    setStatus(`Switching mount to ${mode}...`);
+    fetch(`${API_BASE}/rig`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mount_mode: mode })
+    }).then(res => res.json()).then(data => {
+      if (data.success) {
+        setMountEngine(data.mount_mode);
+        setStatus(`Mount set to ${data.mount_mode}`);
+      }
+    }).catch(e => setStatus(`Error: ${e.message}`));
+  };
+
+  const handleReconnectCamera = () => {
+    setIsReconnecting(true);
+    setStatus('Reconnecting camera hardware...');
+    fetch(`${API_BASE}/camera/reconnect`, {
+      method: 'POST'
+    }).then(res => res.json()).then(data => {
+      if (data.success) {
+        setStatus('Camera reconnected successfully!');
+      } else {
+        setStatus('Camera reconnect failed: check hardware connection');
+      }
+    }).catch(e => {
+      setStatus(`Reconnect error: ${e.message}`);
+    }).finally(() => {
+      setIsReconnecting(false);
+    });
   };
 
   const handleCapture = () => {
@@ -250,8 +290,21 @@ function App() {
       <div className="main-view">
         <header className="main-header">
           <h1><Camera size={24} /> AstroCam Rig <span style={{ fontSize: '10px', color: '#8b949e', verticalAlign: 'middle' }}>v0.1.2</span></h1>
-          <div className="status-badge" style={{ color: health.connected ? '#238636' : '#da3633' }}>
-            ● {health.connected ? 'Connected' : 'Disconnected'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div className="status-badge" style={{ color: health.connected ? '#238636' : '#da3633' }}>
+              ● {health.connected ? 'Connected' : 'Disconnected'}
+            </div>
+            {cameraEngine === 'real' && (
+              <button 
+                className="reconnect-btn" 
+                onClick={handleReconnectCamera} 
+                disabled={isReconnecting}
+                title="Scan and reconnect camera hardware"
+              >
+                <RefreshCw size={12} className={isReconnecting ? 'spin' : ''} />
+                Reconnect
+              </button>
+            )}
           </div>
         </header>
 
@@ -301,14 +354,22 @@ function App() {
 
         <div className="sidebar-scroll">
           <div className="control-section">
-            <div className="section-header"><Camera size={16} /> Engine</div>
+            <div className="section-header"><Camera size={16} /> Camera Engine</div>
             <div className="rig-toggle">
-              <button className={rigMode === 'mock' ? 'active' : ''} onClick={() => handleSwitchRig('mock')}>Mock</button>
-              <button className={rigMode === 'real' ? 'active' : ''} onClick={() => handleSwitchRig('real')}>Real</button>
+              <button className={cameraEngine === 'mock' ? 'active' : ''} onClick={() => handleSwitchCamera('mock')}>Mock</button>
+              <button className={cameraEngine === 'real' ? 'active' : ''} onClick={() => handleSwitchCamera('real')}>Real</button>
             </div>
           </div>
 
-          {rigMode === 'mock' && (
+          <div className="control-section" style={{ marginTop: '-12px' }}>
+            <div className="section-header"><Compass size={16} /> Mount Engine</div>
+            <div className="rig-toggle">
+              <button className={mountEngine === 'mock' ? 'active' : ''} onClick={() => handleSwitchMount('mock')}>Mock</button>
+              <button className={mountEngine === 'real' ? 'active' : ''} onClick={() => handleSwitchMount('real')}>Real</button>
+            </div>
+          </div>
+
+          {cameraEngine === 'mock' && (
             <div className="control-section" style={{ marginTop: '-12px' }}>
               <div className="tracking-telemetry" style={{ marginTop: '0px', background: 'rgba(88, 166, 255, 0.05)', borderColor: 'rgba(88, 166, 255, 0.15)' }}>
                 {trackingStatus.sim_drift_speed != null && (
