@@ -185,7 +185,7 @@ async def stream():
         return Response(content="Pipeline not available", status_code=503)
         
     async def frame_generator():
-        while True:
+        while pipeline and pipeline.is_running:
             try:
                 frame = pipeline.get_frame()
                 if frame:

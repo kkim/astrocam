@@ -36,10 +36,15 @@ def test_stream_recorder_unit():
         assert stop_res["bytes_stored"] > 0
         assert stop_res["mb_stored"] >= 0.0
 
-        # Verify files on disk
+        # Verify files on disk have timestamp names
         files = os.listdir(session_dir)
         assert len(files) == 5
-        assert "frame_000001.jpg" in files
+        for f in files:
+            assert f.endswith(".jpg")
+            assert not f.startswith("frame_")
+            # Filename starts with 8-digit date YYYYMMDD
+            base = os.path.splitext(f)[0]
+            assert len(base.split("_")[0]) == 8
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

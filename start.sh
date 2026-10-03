@@ -11,6 +11,13 @@ sleep 2
 cleanup() {
     echo "Shutting down AstroCam..."
     kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    for i in {1..20}; do
+        if ! kill -0 $BACKEND_PID 2>/dev/null && ! kill -0 $FRONTEND_PID 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+    kill -9 $BACKEND_PID $FRONTEND_PID 2>/dev/null
     exit 0
 }
 

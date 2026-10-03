@@ -77,16 +77,17 @@ class StreamRecorder:
                 "session_path": self.session_path
             }
 
-    def add_frame(self, frame: np.ndarray) -> None:
+    def add_frame(self, frame: np.ndarray, timestamp: Optional[float] = None) -> None:
         """
-        Submits a frame to the asynchronous write queue.
+        Submits a frame with its capture timestamp to the asynchronous write queue.
         Fast and non-blocking for the acquisition loop.
         """
         if not self.is_recording:
             return
 
+        capture_time = timestamp if timestamp is not None else time.time()
         try:
-            self.frame_queue.put_nowait(frame.copy())
+            self.frame_queue.put_nowait((frame.copy(), capture_time))
         except queue.Full:
             with self.lock:
                 self.dropped_frames += 1
@@ -97,15 +98,27 @@ class StreamRecorder:
         """Background disk writer thread."""
         while self.is_recording or not self.frame_queue.empty():
             try:
-                frame = self.frame_queue.get(timeout=0.2)
+                item = self.frame_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
 
             try:
+                if isinstance(item, tuple):
+                    frame, capture_time = item
+                else:
+                    frame, capture_time = item, time.time()
+
                 with self.lock:
                     curr_idx = self.frames_count + 1
-                filename = f"frame_{curr_idx:06d}.jpg"
+
+                # Use timestamp for image filename instead of sequential frame number
+                dt = datetime.fromtimestamp(capture_time)
+                timestamp_str = dt.strftime("%Y%m%d_%H%M%S_%f")
+                filename = f"{timestamp_str}.jpg"
                 filepath = os.path.join(self.session_path, filename)
+                if os.path.exists(filepath):
+                    filename = f"{timestamp_str}_{curr_idx:06d}.jpg"
+                    filepath = os.path.join(self.session_path, filename)
 
                 # Save frame at high JPEG quality
                 cv2.imwrite(filepath, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
