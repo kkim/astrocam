@@ -79,8 +79,10 @@ class RealMount:
 
     def get_motor_status(self) -> Dict[str, Any]:
         return {
-            "current_duty": self.current_duty,
-            "target_duty": self.target_duty,
+            "duty_cycle": round(self.current_duty, 2),
+            "current_duty": round(self.current_duty, 2),
+            "target_duty": round(self.target_duty, 2),
+            "voltage": round(3.3 * (self.current_duty / 100.0), 2),
             "is_ramping": self.ramp_thread.is_alive() if self.ramp_thread else False,
             "mock_mode": not HAS_GPIO or self.pin is None,
             "mount_mode": "real"

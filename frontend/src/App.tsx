@@ -42,6 +42,16 @@ interface RecordingStatus {
   dropped_frames?: number;
 }
 
+interface MotorStatus {
+  duty_cycle?: number;
+  current_duty?: number;
+  target_duty?: number;
+  voltage?: number;
+  mock_mode?: boolean;
+  mount_mode?: string;
+  is_ramping?: boolean;
+}
+
 function App() {
   const [controls, setControls] = useState<Controls>({
     brightness: 128, contrast: 32, saturation: 64, gain: 0,
@@ -68,7 +78,7 @@ function App() {
     duration_sec: 0,
     fps: 0
   });
-  const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
+  const [motorStatus, setMotorStatus] = useState<MotorStatus>({ duty_cycle: 0, current_duty: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [prevDuty, setPrevDuty] = useState<number>(85.0);
   const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>({
@@ -110,9 +120,16 @@ function App() {
         const mRes = await fetch(`${API_BASE}/motor/status`);
         if (mRes.ok && !isAdjustingMotor) {
           const data = await mRes.json();
-          setMotorStatus(data);
-          if (data.duty_cycle > 0) {
-            setPrevDuty(data.duty_cycle);
+          const duty = data.duty_cycle !== undefined ? data.duty_cycle : (data.current_duty !== undefined ? data.current_duty : 0);
+          const voltage = data.voltage !== undefined ? data.voltage : (3.3 * duty) / 100;
+          setMotorStatus({
+            ...data,
+            duty_cycle: duty,
+            current_duty: duty,
+            voltage
+          });
+          if (duty > 0.05) {
+            setPrevDuty(duty);
           }
         }
 
@@ -178,8 +195,13 @@ function App() {
 
   const updateMotorSpeed = (speed: number) => {
     setIsAdjustingMotor(true);
-    setMotorStatus(prev => ({ ...prev, duty_cycle: speed, voltage: (3.3 * speed) / 100 }));
-    if (speed > 0) {
+    setMotorStatus(prev => ({
+      ...prev,
+      duty_cycle: speed,
+      current_duty: speed,
+      voltage: (3.3 * speed) / 100
+    }));
+    if (speed > 0.05) {
       setPrevDuty(speed);
     }
     fetch(`${API_BASE}/motor/speed`, {
@@ -339,7 +361,7 @@ function App() {
         }
       }).catch(e => setStatus(`Error: ${e.message}`));
     } else {
-      const targetSpeed = mode === 'on' ? prevDuty : 0.0;
+      const targetSpeed = mode === 'on' ? (prevDuty > 0.05 ? prevDuty : 85.0) : 0.0;
       if (trackingStatus.active) {
         setStatus('Disabling auto-tracking...');
         fetch(`${API_BASE}/tracking/toggle`, {
@@ -496,13 +518,13 @@ function App() {
               <input type="range" min="0" max="100" step="0.2" value={motorStatus.duty_cycle || 0} onChange={(e) => updateMotorSpeed(parseFloat(e.target.value))} />
               <div className="preset-row">
                 <button 
-                  className={(!trackingStatus.active && (motorStatus.duty_cycle || 0) === 0) ? 'active' : ''} 
+                  className={(!trackingStatus.active && (motorStatus.duty_cycle || 0) <= 0.05) ? 'active' : ''} 
                   onClick={() => setMountMode('off')}
                 >
                   OFF
                 </button>
                 <button 
-                  className={(!trackingStatus.active && (motorStatus.duty_cycle || 0) > 0) ? 'active' : ''} 
+                  className={(!trackingStatus.active && (motorStatus.duty_cycle || 0) > 0.05) ? 'active' : ''} 
                   onClick={() => setMountMode('on')}
                 >
                   ON

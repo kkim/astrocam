@@ -151,6 +151,8 @@ def get_motor_status():
 
 @app.post("/motor/speed")
 def set_motor_speed(update: MotorSpeedUpdate):
+    if pipeline and pipeline.auto_tracking:
+        pipeline.set_auto_tracking(False)
     success = rig.set_motor_speed(update.speed)
     if success:
         event_logger.log(f"Motor speed: {update.speed}%")
