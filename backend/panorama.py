@@ -43,51 +43,60 @@ class PanoramaManager:
         return True
 
     def _run_panorama(self):
+        event_logger.log(f"Panorama thread started: {self.total_frames} frames")
         try:
             for i in range(self.total_frames):
-                if not self.is_active: break
+                if not self.is_active: 
+                    event_logger.log("Panorama loop cancelled")
+                    break
                 frame = self.rig.get_raw_frame()
-                if frame is not None:
-                    # Initialize buffers on the first frame
-                    if self.sum_buffer is None:
-                        h, w = frame.shape[:2]
-                        buf_w, buf_h = w * 6, h * 3
-                        self.sum_buffer = np.zeros((buf_h, buf_w, 3), dtype=np.float32)
-                        self.weight_buffer = np.zeros((buf_h, buf_w), dtype=np.float32)
-                        self.base_x, self.base_y = (buf_w - w) // 2, (buf_h - h) // 2
+                if frame is None:
+                    event_logger.log(f"Panorama: Frame {i} is None!")
+                    time.sleep(1.0)
+                    continue
 
-                    if self.auto_align:
-                        # Auto-align: pass self.prev_frame to the helper to handle alignment, composition, and accumulation
-                        self.sum_buffer, self.weight_buffer, self.T_cumulative = accumulate_panorama_frame(
-                            self.sum_buffer, self.weight_buffer, (self.base_x, self.base_y),
-                            self.T_cumulative, self.prev_frame, frame, translation_only=True
-                        )
-                        
-                        # Extract current offsets for UI/logs
-                        self.offset_x = float(self.T_cumulative[0, 2])
-                        self.offset_y = float(self.T_cumulative[1, 2])
-                        self.offset_angle = float(np.arctan2(self.T_cumulative[1, 0], self.T_cumulative[0, 0]) * 180.0 / np.pi)
-                        
-                        if self.prev_frame is not None and i % 5 == 0:
-                            T_step = align_images(self.prev_frame, frame, translation_only=True)
-                            event_logger.log(f"Align F{i}: dx={T_step[0, 2]:.1f}, dy={T_step[1, 2]:.1f}, rot={self.offset_angle:.2f}°")
-                    else:
-                        # Manual drift: manually compose the translation matrix first (for subsequent frames)
-                        if self.prev_frame is not None:
-                            T_step = np.float32([[1, 0, self.drift_step], [0, 1, 0]])
-                            self.T_cumulative = compose_transforms(self.T_cumulative, T_step)
-                        
-                        # Accumulate without further alignment (pass img_prev=None)
-                        self.sum_buffer, self.weight_buffer, self.T_cumulative = accumulate_panorama_frame(
-                            self.sum_buffer, self.weight_buffer, (self.base_x, self.base_y),
-                            self.T_cumulative, None, frame, translation_only=True
-                        )
-                        self.offset_x = float(self.T_cumulative[0, 2])
-                        self.offset_y = float(self.T_cumulative[1, 2])
-                        self.offset_angle = 0.0
+                # Initialize buffers on the first frame
+                if self.sum_buffer is None:
+                    h, w = frame.shape[:2]
+                    buf_w, buf_h = w * 6, h * 3
+                    self.sum_buffer = np.zeros((buf_h, buf_w, 3), dtype=np.float32)
+                    self.weight_buffer = np.zeros((buf_h, buf_w), dtype=np.float32)
+                    self.base_x, self.base_y = (buf_w - w) // 2, (buf_h - h) // 2
+                    event_logger.log("Panorama buffers initialized")
 
-                    self.current_frame += 1
-                    self.prev_frame = frame
+                if self.auto_align:
+                    # Auto-align: pass self.prev_frame to the helper to handle alignment, composition, and accumulation
+                    self.sum_buffer, self.weight_buffer, self.T_cumulative = accumulate_panorama_frame(
+                        self.sum_buffer, self.weight_buffer, (self.base_x, self.base_y),
+                        self.T_cumulative, self.prev_frame, frame, translation_only=True
+                    )
+                    
+                    # Extract current offsets for UI/logs
+                    self.offset_x = float(self.T_cumulative[0, 2])
+                    self.offset_y = float(self.T_cumulative[1, 2])
+                    self.offset_angle = float(np.arctan2(self.T_cumulative[1, 0], self.T_cumulative[0, 0]) * 180.0 / np.pi)
+                    
+                    if self.prev_frame is not None and i % 5 == 0:
+                        T_step = align_images(self.prev_frame, frame, translation_only=True)
+                        event_logger.log(f"Align F{i}: dx={T_step[0, 2]:.1f}, dy={T_step[1, 2]:.1f}, rot={self.offset_angle:.2f}°")
+                else:
+                    # Manual drift: manually compose the translation matrix first (for subsequent frames)
+                    if self.prev_frame is not None:
+                        T_step = np.float32([[1, 0, self.drift_step], [0, 1, 0]])
+                        self.T_cumulative = compose_transforms(self.T_cumulative, T_step)
+                    
+                    # Accumulate without further alignment (pass img_prev=None)
+                    self.sum_buffer, self.weight_buffer, self.T_cumulative = accumulate_panorama_frame(
+                        self.sum_buffer, self.weight_buffer, (self.base_x, self.base_y),
+                        self.T_cumulative, None, frame, translation_only=True
+                    )
+                    self.offset_x = float(self.T_cumulative[0, 2])
+                    self.offset_y = float(self.T_cumulative[1, 2])
+                    self.offset_angle = 0.0
+
+                self.current_frame += 1
+                self.prev_frame = frame
+                event_logger.log(f"Panorama frame {self.current_frame}/{self.total_frames} processed")
                 time.sleep(0.5)
             self._finalize()
         except Exception as e:

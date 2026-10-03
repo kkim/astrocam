@@ -230,5 +230,30 @@ def get_tracking_status():
     if not pipeline: return {"active": False, "status": "inactive"}
     return pipeline.get_tracking_status()
 
+class PanoramaStartRequest(BaseModel):
+    frames: int
+    drift_step: float = 15.0
+    auto_align: bool = True
+
+@app.post("/panorama/start")
+def start_panorama(req: PanoramaStartRequest):
+    if not panorama:
+        return {"success": False, "error": "Panorama manager not initialized"}
+    success = panorama.start(frames=req.frames, drift_step=req.drift_step, auto_align=req.auto_align)
+    return {"success": success}
+
+@app.post("/panorama/stop")
+def stop_panorama():
+    if not panorama:
+        return {"success": False, "error": "Panorama manager not initialized"}
+    panorama.stop()
+    return {"success": True}
+
+@app.get("/panorama/status")
+def get_panorama_status():
+    if not panorama:
+        return {"active": False}
+    return panorama.get_status()
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

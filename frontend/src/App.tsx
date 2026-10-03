@@ -249,7 +249,7 @@ function App() {
 
       <div className="main-view">
         <header className="main-header">
-          <h1><Camera size={24} /> AstroCam Rig</h1>
+          <h1><Camera size={24} /> AstroCam Rig <span style={{ fontSize: '10px', color: '#8b949e', verticalAlign: 'middle' }}>v0.1.2</span></h1>
           <div className="status-badge" style={{ color: health.connected ? '#238636' : '#da3633' }}>
             ● {health.connected ? 'Connected' : 'Disconnected'}
           </div>
