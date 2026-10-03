@@ -232,6 +232,7 @@ def get_status():
     status["mock_mode"] = motor_status.get("mock_mode", True)
     status["camera_mode"] = camera_mode
     status["mount_mode"] = mount_mode
+    status["recording"] = pipeline.get_recording_status()
     return status
 
 @app.get("/controls")
@@ -249,6 +250,21 @@ def set_control(update: ControlUpdate):
     if success:
         event_logger.log(f"Control: {update.property} -> {update.value}")
     return {"success": success, "property": update.property, "value": update.value}
+
+@app.post("/recording/start")
+def start_recording():
+    if not pipeline: return {"success": False, "error": "Pipeline not initialized"}
+    return pipeline.start_recording()
+
+@app.post("/recording/stop")
+def stop_recording():
+    if not pipeline: return {"success": False, "error": "Pipeline not initialized"}
+    return pipeline.stop_recording()
+
+@app.get("/recording/status")
+def get_recording_status():
+    if not pipeline: return {"is_recording": False, "frames": 0, "mb_stored": 0.0}
+    return pipeline.get_recording_status()
 
 @app.post("/capture")
 def capture():

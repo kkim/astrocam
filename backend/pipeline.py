@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 from logger import event_logger
 from alignment_utils import align_images, detect_stars
+from recorder import StreamRecorder
 
 class AstroPipeline:
     """
@@ -122,6 +123,9 @@ class AstroPipeline:
         }
         self.sequence_stop_event = threading.Event()
         
+        # Dedicated stream recorder
+        self.recorder = StreamRecorder()
+
         # Start background processing thread
         self.thread = threading.Thread(target=self._processing_loop, daemon=True)
         self.thread.start()
@@ -148,6 +152,9 @@ class AstroPipeline:
         Args:
             frame: Raw BGR/grayscale numpy array acquired from the camera rig.
         """
+        # Submit raw frame to stream recorder if active
+        self.recorder.add_frame(frame)
+
         with self.lock:
             # Tier 1 Stacking (Weighted averaging)
             if self.n_avg <= 1:
@@ -574,12 +581,26 @@ class AstroPipeline:
         """
         return self.sequence_info
 
+    def start_recording(self):
+        """Starts continuous stream recording to a timestamped folder."""
+        return self.recorder.start_recording()
+
+    def stop_recording(self):
+        """Stops active stream recording and flushes pending frames."""
+        return self.recorder.stop_recording()
+
+    def get_recording_status(self):
+        """Returns live stream recording status and metrics."""
+        return self.recorder.get_status()
+
     def close(self):
         """
-        Closes background pipeline threads and stops active sequences.
+        Closes background pipeline threads and stops active sequences and recordings.
         """
         self.is_running = False
         self.sequence_stop_event.set()
+        if hasattr(self, 'recorder'):
+            self.recorder.stop_recording()
 
 
 def update_duty_cycle(history_v, history_u, g):

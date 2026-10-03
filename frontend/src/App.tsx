@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { Camera, Sliders, Image, Save, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass } from 'lucide-react';
+import { Camera, Sliders, Image, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circle, Square } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -27,6 +27,17 @@ interface TrackingStatus {
   sim_camera_angle: number | null;
 }
 
+interface RecordingStatus {
+  is_recording: boolean;
+  frames: number;
+  bytes_stored: number;
+  mb_stored: number;
+  directory: string;
+  duration_sec: number;
+  fps: number;
+  dropped_frames?: number;
+}
+
 function App() {
   const [controls, setControls] = useState<Controls>({
     brightness: 128, contrast: 32, saturation: 64, gain: 0,
@@ -38,6 +49,15 @@ function App() {
   const [cameraEngine, setCameraEngine] = useState<string>('mock');
   const [mountEngine, setMountEngine] = useState<string>('mock');
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({
+    is_recording: false,
+    frames: 0,
+    bytes_stored: 0,
+    mb_stored: 0,
+    directory: '',
+    duration_sec: 0,
+    fps: 0
+  });
   const [motorStatus, setMotorStatus] = useState({ duty_cycle: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [prevDuty, setPrevDuty] = useState<number>(85.0);
@@ -73,6 +93,7 @@ function App() {
           setHealth(hData);
           if (hData.camera_mode) setCameraEngine(hData.camera_mode);
           if (hData.mount_mode) setMountEngine(hData.mount_mode);
+          if (hData.recording) setRecordingStatus(hData.recording);
         }
 
         const cRes = await fetch(`${API_BASE}/controls`);
@@ -114,6 +135,22 @@ function App() {
     const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
   }, [isAdjustingMotor]);
+
+  useEffect(() => {
+    if (!recordingStatus.is_recording) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/recording/status`);
+        if (res.ok) {
+          const data = await res.json();
+          setRecordingStatus(data);
+        }
+      } catch (err) {
+        console.error("Recording status poll error:", err);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [recordingStatus.is_recording]);
 
   useEffect(() => {
     if (logWindowRef.current) {
@@ -222,15 +259,47 @@ function App() {
     });
   };
 
-  const handleCapture = () => {
-    setStatus('Capturing frame...');
-    fetch(`${API_BASE}/capture`, { method: 'POST' })
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          showToast(`Saved: ${data.filename}`, 3000);
-        }
-      }).catch(e => showToast(`Error: ${e.message}`, 4000));
+  const handleToggleRecording = () => {
+    if (recordingStatus.is_recording) {
+      setStatus('Stopping recording...');
+      fetch(`${API_BASE}/recording/stop`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            setRecordingStatus(prev => ({
+              ...prev,
+              is_recording: false,
+              frames: data.frames,
+              mb_stored: data.mb_stored,
+              directory: data.directory
+            }));
+            showToast(`Recording stopped: ${data.frames} frames (${data.mb_stored} MB) in captures/${data.directory}/`, 3500);
+          } else {
+            showToast(`Error: ${data.error || 'Failed to stop recording'}`, 4000);
+          }
+        })
+        .catch(e => showToast(`Error: ${e.message}`, 4000));
+    } else {
+      setStatus('Starting stream recording...');
+      fetch(`${API_BASE}/recording/start`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            setRecordingStatus(prev => ({
+              ...prev,
+              is_recording: true,
+              frames: 0,
+              mb_stored: 0,
+              directory: data.directory,
+              duration_sec: 0
+            }));
+            showToast(`Recording started in captures/${data.directory}/`, 3000);
+          } else {
+            showToast(`Error: ${data.error || 'Failed to start recording'}`, 4000);
+          }
+        })
+        .catch(e => showToast(`Error: ${e.message}`, 4000));
+    }
   };
 
   const handleStartPanorama = () => {
@@ -518,7 +587,46 @@ function App() {
         </div>
         
         <div className="sidebar-footer">
-          <button className="btn-capture" onClick={handleCapture}><Save size={18} /> Take Photo</button>
+          {recordingStatus.is_recording ? (
+            <div className="recording-panel">
+              <div className="recording-header">
+                <span className="rec-badge">
+                  <span className="rec-dot"></span> REC
+                </span>
+                <span className="rec-dir" title={recordingStatus.directory}>
+                  {recordingStatus.directory}
+                </span>
+              </div>
+              <div className="recording-stats">
+                <div className="rec-stat">
+                  <span className="stat-label">Frames</span>
+                  <span className="stat-val">{recordingStatus.frames}</span>
+                </div>
+                <div className="rec-stat">
+                  <span className="stat-label">Storage</span>
+                  <span className="stat-val">{(recordingStatus.mb_stored || 0).toFixed(1)} <small>MB</small></span>
+                </div>
+                <div className="rec-stat">
+                  <span className="stat-label">Duration</span>
+                  <span className="stat-val">{Math.floor(recordingStatus.duration_sec || 0)}s</span>
+                </div>
+              </div>
+              <button className="btn-record stop" onClick={handleToggleRecording}>
+                <Square size={16} fill="currentColor" /> Stop Recording
+              </button>
+            </div>
+          ) : (
+            <div className="recording-panel stopped">
+              {recordingStatus.frames > 0 && (
+                <div className="last-rec-info">
+                  Last: {recordingStatus.frames} frames ({(recordingStatus.mb_stored || 0).toFixed(1)} MB)
+                </div>
+              )}
+              <button className="btn-record start" onClick={handleToggleRecording}>
+                <Circle size={14} fill="#ff4d4f" color="#ff4d4f" /> Start Recording
+              </button>
+            </div>
+          )}
         </div>
       </aside>
     </div>
