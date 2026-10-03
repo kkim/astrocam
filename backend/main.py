@@ -251,10 +251,16 @@ def set_control(update: ControlUpdate):
         event_logger.log(f"Control: {update.property} -> {update.value}")
     return {"success": success, "property": update.property, "value": update.value}
 
+class RecordingStartRequest(BaseModel):
+    accumulation_ms: Optional[int] = None
+    format: Optional[str] = None
+
 @app.post("/recording/start")
-def start_recording():
+def start_recording(req: Optional[RecordingStartRequest] = None):
     if not pipeline: return {"success": False, "error": "Pipeline not initialized"}
-    return pipeline.start_recording()
+    acc_ms = req.accumulation_ms if (req and req.accumulation_ms is not None) else None
+    fmt = req.format if (req and req.format is not None) else None
+    return pipeline.start_recording(accumulation_ms=acc_ms, file_format=fmt)
 
 @app.post("/recording/stop")
 def stop_recording():

@@ -581,9 +581,9 @@ class AstroPipeline:
         """
         return self.sequence_info
 
-    def start_recording(self):
+    def start_recording(self, accumulation_ms=None, file_format=None):
         """Starts continuous stream recording to a timestamped folder."""
-        return self.recorder.start_recording()
+        return self.recorder.start_recording(accumulation_ms=accumulation_ms, file_format=file_format)
 
     def stop_recording(self):
         """Stops active stream recording and flushes pending frames."""

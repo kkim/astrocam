@@ -286,12 +286,6 @@ input[type="range"] {
   background: var(--border-color);
 }
 
-.panorama-config {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
 .config-row {
   display: flex;
   gap: 12px;
@@ -407,12 +401,12 @@ input[type="number"] {
 
 .recording-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 6px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
   background: var(--bg-dark);
   border: 1px solid var(--border-color);
   border-radius: 6px;
-  padding: 8px 6px;
+  padding: 8px 4px;
 }
 
 .rec-stat {
@@ -423,7 +417,7 @@ input[type="number"] {
 }
 
 .stat-label {
-  font-size: 9px;
+  font-size: 8px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-muted);
@@ -431,10 +425,11 @@ input[type="number"] {
 
 .stat-val {
   font-family: monospace;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--text-primary);
   margin-top: 2px;
+  white-space: nowrap;
 }
 
 .stat-val small {

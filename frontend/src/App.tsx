@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { Camera, Sliders, Image, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circle, Square } from 'lucide-react';
+import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circle, Square } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -30,6 +30,10 @@ interface TrackingStatus {
 interface RecordingStatus {
   is_recording: boolean;
   frames: number;
+  raw_frames?: number;
+  accumulated_frames?: number;
+  accumulation_ms?: number;
+  format?: string;
   bytes_stored: number;
   mb_stored: number;
   directory: string;
@@ -49,9 +53,15 @@ function App() {
   const [cameraEngine, setCameraEngine] = useState<string>('mock');
   const [mountEngine, setMountEngine] = useState<string>('mock');
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const [accumulationMs, setAccumulationMs] = useState<number>(0);
+  const [recordFormat, setRecordFormat] = useState<'tif' | 'jpg'>('tif');
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({
     is_recording: false,
     frames: 0,
+    raw_frames: 0,
+    accumulated_frames: 1,
+    accumulation_ms: 0,
+    format: 'tif',
     bytes_stored: 0,
     mb_stored: 0,
     directory: '',
@@ -72,8 +82,6 @@ function App() {
     sim_drift_angle: null,
     sim_camera_angle: null
   });
-  const [panoramaStatus, setPanoramaStatus] = useState({ active: false, current: 0, total: 0, progress: 0, offset_x: 0, offset_y: 0, offset_angle: 0 });
-  const [panoramaConfig, setPanoramaConfig] = useState({ frames: 20, drift_step: 15.0, auto_align: true });
   const [health, setHealth] = useState({
     connected: true,
     mean_brightness: 0,
@@ -107,9 +115,6 @@ function App() {
             setPrevDuty(data.duty_cycle);
           }
         }
-
-        const pRes = await fetch(`${API_BASE}/panorama/status`);
-        if (pRes.ok) setPanoramaStatus(await pRes.json());
 
         const lRes = await fetch(`${API_BASE}/logs`);
         if (lRes.ok) setLogs(await lRes.json());
@@ -270,10 +275,15 @@ function App() {
               ...prev,
               is_recording: false,
               frames: data.frames,
+              raw_frames: data.raw_frames,
+              accumulated_frames: data.accumulated_frames,
+              accumulation_ms: data.accumulation_ms,
+              format: data.format,
               mb_stored: data.mb_stored,
               directory: data.directory
             }));
-            showToast(`Recording stopped: ${data.frames} frames (${data.mb_stored} MB) in captures/${data.directory}/`, 3500);
+            const accMsg = data.accumulation_ms > 0 ? ` (~${data.accumulated_frames} frames/stack)` : '';
+            showToast(`Recording stopped: ${data.frames} files saved${accMsg} (${data.mb_stored} MB)`, 3500);
           } else {
             showToast(`Error: ${data.error || 'Failed to stop recording'}`, 4000);
           }
@@ -281,7 +291,14 @@ function App() {
         .catch(e => showToast(`Error: ${e.message}`, 4000));
     } else {
       setStatus('Starting stream recording...');
-      fetch(`${API_BASE}/recording/start`, { method: 'POST' })
+      fetch(`${API_BASE}/recording/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accumulation_ms: accumulationMs,
+          format: recordFormat
+        })
+      })
         .then(res => res.json())
         .then(data => {
           if (data.success) {
@@ -289,6 +306,10 @@ function App() {
               ...prev,
               is_recording: true,
               frames: 0,
+              raw_frames: 0,
+              accumulated_frames: 1,
+              accumulation_ms: data.accumulation_ms ?? accumulationMs,
+              format: data.format ?? recordFormat,
               mb_stored: 0,
               directory: data.directory,
               duration_sec: 0
@@ -300,23 +321,6 @@ function App() {
         })
         .catch(e => showToast(`Error: ${e.message}`, 4000));
     }
-  };
-
-  const handleStartPanorama = () => {
-    showToast('Starting panorama...', 2000);
-    fetch(`${API_BASE}/panorama/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(panoramaConfig)
-    }).catch(e => showToast(`Error: ${e.message}`, 4000));
-  };
-
-  const handleStopPanorama = () => {
-    setStatus('Stopping panorama...');
-    fetch(`${API_BASE}/panorama/stop`, {
-      method: 'POST'
-    }).then(() => setStatus('Ready'))
-      .catch(e => setStatus(`Error: ${e.message}`));
   };
 
   const setMountMode = (mode: 'off' | 'on' | 'auto') => {
@@ -533,39 +537,58 @@ function App() {
           </div>
 
           <div className="control-section">
-            <div className="section-header"><Image size={16} /> Panorama</div>
-            {panoramaStatus.active ? (
-              <div className="progress-container">
-                <div className="progress-info">
-                  <span>{panoramaStatus.current || 0}/{panoramaStatus.total || 0} frames</span>
-                  <span>X: {(panoramaStatus.offset_x || 0).toFixed(0)}px, Rot: {(panoramaStatus.offset_angle || 0).toFixed(2)}°</span>
-                </div>
-                <div className="progress-bar-bg">
-                  <div className="progress-bar-fill" style={{ width: `${panoramaStatus.progress || 0}%` }}></div>
-                </div>
+            <div className="section-header"><Zap size={16} /> Stream Recording</div>
+            <div className="control-group">
+              <label>Accumulation Time</label>
+              <div className="preset-row">
                 <button 
-                  className="btn-primary danger" 
-                  onClick={handleStopPanorama} 
-                  style={{ marginTop: '10px' }}
+                  className={accumulationMs === 0 ? 'active' : ''} 
+                  onClick={() => setAccumulationMs(0)}
+                  disabled={recordingStatus.is_recording}
+                  title="Raw: Record every raw frame at full camera frame rate"
                 >
-                  Stop Panorama
+                  0ms (Raw)
+                </button>
+                <button 
+                  className={accumulationMs === 200 ? 'active' : ''} 
+                  onClick={() => setAccumulationMs(200)}
+                  disabled={recordingStatus.is_recording}
+                  title="5 FPS: Accumulate frames over 200ms in RAM (~5 FPS stacked output)"
+                >
+                  200ms (5 FPS)
+                </button>
+                <button 
+                  className={accumulationMs === 1000 ? 'active' : ''} 
+                  onClick={() => setAccumulationMs(1000)}
+                  disabled={recordingStatus.is_recording}
+                  title="1 FPS: Accumulate frames over 1000ms in RAM (~1 FPS stacked output)"
+                >
+                  1000ms (1 FPS)
                 </button>
               </div>
-            ) : (
-              <div className="panorama-config">
-                <div className="config-row">
-                  <div className="field">
-                    <label>Frames</label>
-                    <input type="number" value={panoramaConfig.frames} onChange={e => setPanoramaConfig(p => ({...p, frames: parseInt(e.target.value) || 1}))} />
-                  </div>
-                  <div className="field">
-                    <label>Auto-Align</label>
-                    <input type="checkbox" checked={panoramaConfig.auto_align} onChange={e => setPanoramaConfig(p => ({...p, auto_align: e.target.checked}))} />
-                  </div>
-                </div>
-                <button className="btn-primary purple" onClick={handleStartPanorama}>Start Panorama</button>
+            </div>
+
+            <div className="control-group" style={{ marginTop: '8px' }}>
+              <label>Format</label>
+              <div className="preset-row">
+                <button 
+                  className={recordFormat === 'tif' ? 'active' : ''} 
+                  onClick={() => setRecordFormat('tif')}
+                  disabled={recordingStatus.is_recording}
+                  title="Lossless uncompressed TIFF (ideal for stacking in Siril/DSS)"
+                >
+                  TIFF (Lossless)
+                </button>
+                <button 
+                  className={recordFormat === 'jpg' ? 'active' : ''} 
+                  onClick={() => setRecordFormat('jpg')}
+                  disabled={recordingStatus.is_recording}
+                  title="High quality JPEG"
+                >
+                  JPEG
+                </button>
               </div>
-            )}
+            </div>
           </div>
 
           <div className="control-section">
@@ -591,7 +614,7 @@ function App() {
             <div className="recording-panel">
               <div className="recording-header">
                 <span className="rec-badge">
-                  <span className="rec-dot"></span> REC
+                  <span className="rec-dot"></span> REC {(recordingStatus.accumulation_ms ?? accumulationMs) > 0 ? `${recordingStatus.accumulation_ms ?? accumulationMs}ms` : 'RAW'}
                 </span>
                 <span className="rec-dir" title={recordingStatus.directory}>
                   {recordingStatus.directory}
@@ -599,15 +622,23 @@ function App() {
               </div>
               <div className="recording-stats">
                 <div className="rec-stat">
-                  <span className="stat-label">Frames</span>
+                  <span className="stat-label">Saved</span>
                   <span className="stat-val">{recordingStatus.frames}</span>
+                </div>
+                <div className="rec-stat">
+                  <span className="stat-label">Accumulated</span>
+                  <span className="stat-val">
+                    {(recordingStatus.accumulation_ms ?? accumulationMs) > 0 
+                      ? `${recordingStatus.accumulated_frames || 1} f/stack` 
+                      : '1 (raw)'}
+                  </span>
                 </div>
                 <div className="rec-stat">
                   <span className="stat-label">Storage</span>
                   <span className="stat-val">{(recordingStatus.mb_stored || 0).toFixed(1)} <small>MB</small></span>
                 </div>
                 <div className="rec-stat">
-                  <span className="stat-label">Duration</span>
+                  <span className="stat-label">Time</span>
                   <span className="stat-val">{Math.floor(recordingStatus.duration_sec || 0)}s</span>
                 </div>
               </div>
@@ -619,11 +650,12 @@ function App() {
             <div className="recording-panel stopped">
               {recordingStatus.frames > 0 && (
                 <div className="last-rec-info">
-                  Last: {recordingStatus.frames} frames ({(recordingStatus.mb_stored || 0).toFixed(1)} MB)
+                  Last: {recordingStatus.frames} files ({(recordingStatus.mb_stored || 0).toFixed(1)} MB)
+                  {(recordingStatus.accumulation_ms ?? 0) > 0 && ` • ~${recordingStatus.accumulated_frames || 1} frames/stack`}
                 </div>
               )}
               <button className="btn-record start" onClick={handleToggleRecording}>
-                <Circle size={14} fill="#ff4d4f" color="#ff4d4f" /> Start Recording
+                <Circle size={14} fill="#ff4d4f" color="#ff4d4f" /> Start Recording ({accumulationMs === 0 ? 'Raw' : accumulationMs === 200 ? '200ms / 5 FPS' : '1000ms / 1 FPS'})
               </button>
             </div>
           )}
