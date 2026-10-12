@@ -78,7 +78,6 @@ function App() {
   const [cameraEngine, setCameraEngine] = useState<string>('mock');
   const [mountEngine, setMountEngine] = useState<string>('mock');
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
-  const [accumulationMs, setAccumulationMs] = useState<number>(0);
   const [recordFormat, setRecordFormat] = useState<'tif' | 'jpg'>('tif');
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({
     is_recording: false,
@@ -349,8 +348,7 @@ function App() {
               mb_stored: data.mb_stored,
               directory: data.directory
             }));
-            const accMsg = data.accumulation_ms > 0 ? ` (~${data.accumulated_frames} frames/stack)` : '';
-            showToast(`Recording stopped: ${data.frames} files saved${accMsg} (${data.mb_stored} MB)`, 3500);
+            showToast(`Recording stopped: ${data.frames} files saved (${data.mb_stored} MB)`, 3500);
             fetch(`${API_BASE}/gallery`)
               .then(res => res.json())
               .then(gData => {
@@ -374,7 +372,7 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          accumulation_ms: accumulationMs,
+          accumulation_ms: 0,
           format: recordFormat
         })
       })
@@ -387,7 +385,7 @@ function App() {
               frames: 0,
               raw_frames: 0,
               accumulated_frames: 1,
-              accumulation_ms: data.accumulation_ms ?? accumulationMs,
+              accumulation_ms: 0,
               format: data.format ?? recordFormat,
               mb_stored: 0,
               directory: data.directory,
@@ -637,45 +635,15 @@ function App() {
           <div className="control-section">
             <div className="section-header"><Zap size={16} /> Stream Recording</div>
             <div className="control-group">
-              <label>Accumulation Time</label>
-              <div className="preset-row">
-                <button 
-                  className={accumulationMs === 0 ? 'active' : ''} 
-                  onClick={() => setAccumulationMs(0)}
-                  disabled={recordingStatus.is_recording}
-                  title="Raw: Record every raw frame at full camera frame rate"
-                >
-                  0ms (Raw)
-                </button>
-                <button 
-                  className={accumulationMs === 200 ? 'active' : ''} 
-                  onClick={() => setAccumulationMs(200)}
-                  disabled={recordingStatus.is_recording}
-                  title="5 FPS: Accumulate frames over 200ms in RAM (~5 FPS stacked output)"
-                >
-                  200ms (5 FPS)
-                </button>
-                <button 
-                  className={accumulationMs === 1000 ? 'active' : ''} 
-                  onClick={() => setAccumulationMs(1000)}
-                  disabled={recordingStatus.is_recording}
-                  title="1 FPS: Accumulate frames over 1000ms in RAM (~1 FPS stacked output)"
-                >
-                  1000ms (1 FPS)
-                </button>
-              </div>
-            </div>
-
-            <div className="control-group" style={{ marginTop: '8px' }}>
-              <label>Format</label>
+              <label>Capture Format</label>
               <div className="preset-row">
                 <button 
                   className={recordFormat === 'tif' ? 'active' : ''} 
                   onClick={() => setRecordFormat('tif')}
                   disabled={recordingStatus.is_recording}
-                  title="Lossless uncompressed TIFF (ideal for stacking in Siril/DSS)"
+                  title="Lossless uncompressed 16-bit TIFF (ideal for stacking in Siril/DSS)"
                 >
-                  TIFF (Lossless)
+                  TIFF (16-bit)
                 </button>
                 <button 
                   className={recordFormat === 'jpg' ? 'active' : ''} 
@@ -746,7 +714,7 @@ function App() {
             <div className="recording-panel">
               <div className="recording-header">
                 <span className="rec-badge">
-                  <span className="rec-dot"></span> REC {(recordingStatus.accumulation_ms ?? accumulationMs) > 0 ? `${recordingStatus.accumulation_ms ?? accumulationMs}ms` : 'RAW'}
+                  <span className="rec-dot"></span> REC ({recordFormat.toUpperCase()})
                 </span>
                 <span className="rec-dir" title={recordingStatus.directory}>
                   {recordingStatus.directory}
@@ -758,12 +726,8 @@ function App() {
                   <span className="stat-val">{recordingStatus.frames}</span>
                 </div>
                 <div className="rec-stat">
-                  <span className="stat-label">Accumulated</span>
-                  <span className="stat-val">
-                    {(recordingStatus.accumulation_ms ?? accumulationMs) > 0 
-                      ? `${recordingStatus.accumulated_frames || 1} f/stack` 
-                      : '1 (raw)'}
-                  </span>
+                  <span className="stat-label">Rate</span>
+                  <span className="stat-val">{(recordingStatus.fps || 0).toFixed(1)} <small>fps</small></span>
                 </div>
                 <div className="rec-stat">
                   <span className="stat-label">Storage</span>
@@ -783,11 +747,10 @@ function App() {
               {recordingStatus.frames > 0 && (
                 <div className="last-rec-info">
                   Last: {recordingStatus.frames} files ({(recordingStatus.mb_stored || 0).toFixed(1)} MB)
-                  {(recordingStatus.accumulation_ms ?? 0) > 0 && ` • ~${recordingStatus.accumulated_frames || 1} frames/stack`}
                 </div>
               )}
               <button className="btn-record start" onClick={handleToggleRecording}>
-                <Circle size={14} fill="#ff4d4f" color="#ff4d4f" /> Start Recording ({accumulationMs === 0 ? 'Raw' : accumulationMs === 200 ? '200ms / 5 FPS' : '1000ms / 1 FPS'})
+                <Circle size={14} fill="#ff4d4f" color="#ff4d4f" /> Start Recording ({recordFormat.toUpperCase()})
               </button>
             </div>
           )}
