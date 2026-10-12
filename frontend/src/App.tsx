@@ -4,6 +4,27 @@ import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circ
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
+const EXPOSURE_PRESETS = [
+  { label: '10ms', value: 100 },
+  { label: '20ms', value: 200 },
+  { label: '50ms', value: 500 },
+  { label: '100ms', value: 1000 },
+  { label: '250ms', value: 2500 },
+  { label: '500ms', value: 5000 },
+  { label: '1s', value: 10000 },
+];
+
+const CAMERA_SETTING_KEYS: (keyof Controls)[] = [
+  'exposure',
+  'gain',
+  'brightness',
+  'contrast',
+  'saturation',
+  'sharpness',
+  'auto_exposure',
+  'average'
+];
+
 interface Controls {
   brightness: number;
   contrast: number;
@@ -70,7 +91,7 @@ interface GalleryItem {
 function App() {
   const [controls, setControls] = useState<Controls>({
     brightness: 128, contrast: 32, saturation: 64, gain: 0,
-    exposure: 156, sharpness: 2, average: 1, auto_exposure: 0
+    exposure: 156, sharpness: 0, average: 1, auto_exposure: 0
   });
   const [status, setStatus] = useState<string>('Ready');
   const [logs, setLogs] = useState<string[]>([]);
@@ -699,7 +720,8 @@ function App() {
 
           <div className="control-section">
             <div className="section-header"><RefreshCw size={16} /> Camera Settings</div>
-            {Object.entries(controls || {}).map(([key, value]) => {
+            {CAMERA_SETTING_KEYS.map((key) => {
+              const value = controls ? controls[key] : 0;
               let minVal = 0;
               let maxVal = 255;
               let stepVal = 1;
@@ -719,12 +741,28 @@ function App() {
               } else if (key === 'brightness') {
                 minVal = 0;
                 maxVal = 255;
-                const note = value === 128 ? ' (Neutral)' : (value || 0) < 128 ? ' (Dark offset)' : ' (Bright offset)';
+                const note = value === 128 ? ' (128 = Neutral Black Level)' : (value || 0) < 128 ? ' (Dark Offset - Clips Blacks)' : ' (Bright Offset)';
                 labelText = `Brightness: ${value}${note}`;
               } else if (key === 'gain') {
                 minVal = 0;
                 maxVal = 255;
-                labelText = `Gain: ${value}`;
+                const note = value === 0 ? ' (0 = Unity 1x, Max Dynamic Range)' : ` (+${(((value || 0) / 255) * 100).toFixed(0)}% Boost)`;
+                labelText = `Gain: ${value}${note}`;
+              } else if (key === 'contrast') {
+                minVal = 0;
+                maxVal = 255;
+                const note = value === 32 ? ' (32 = Neutral Linear)' : ' (Non-linear S-Curve)';
+                labelText = `Contrast: ${value}${note}`;
+              } else if (key === 'saturation') {
+                minVal = 0;
+                maxVal = 255;
+                const note = value === 64 ? ' (64 = Neutral Color)' : value === 0 ? ' (0 = Monochrome)' : '';
+                labelText = `Saturation: ${value}${note}`;
+              } else if (key === 'sharpness') {
+                minVal = 0;
+                maxVal = 6;
+                const note = value === 0 ? ' (0 = Off, Recommended for Astro)' : ' (Warning: Ringing Halos)';
+                labelText = `Sharpness: ${value}${note}`;
               } else if (key === 'auto_exposure') {
                 minVal = 0;
                 maxVal = 1;
@@ -742,6 +780,21 @@ function App() {
                     value={value ?? 0} 
                     onChange={e => updateControl(key, parseInt(e.target.value))} 
                   />
+                  {key === 'exposure' && (
+                    <div className="preset-row wrap">
+                      {EXPOSURE_PRESETS.map(p => (
+                        <button
+                          key={p.value}
+                          type="button"
+                          className={controls.exposure === p.value ? 'active' : ''}
+                          onClick={() => updateControl('exposure', p.value)}
+                          title={`Set exposure to ${p.label} (${p.value} units)`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}

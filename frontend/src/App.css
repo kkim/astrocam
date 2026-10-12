@@ -316,6 +316,18 @@ input[type="range"] {
   margin-top: 10px;
 }
 
+.preset-row.wrap {
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.preset-row.wrap button {
+  flex: 1 1 calc(25% - 4px);
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
 .preset-row button {
   flex: 1;
   background: var(--bg-panel);

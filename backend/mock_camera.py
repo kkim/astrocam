@@ -24,7 +24,7 @@ class MockCamera:
 
         self.params: Dict[str, Any] = {
             "brightness": 128, "contrast": 32, "saturation": 64,
-            "gain": 0, "exposure": 156, "sharpness": 2, "auto_exposure": 0
+            "gain": 0, "exposure": 156, "sharpness": 0, "auto_exposure": 0
         }
 
         # Drift position
