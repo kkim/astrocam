@@ -27,18 +27,107 @@ app.add_middleware(
 )
 
 # Ensure captures directory exists
-if not os.path.exists("../captures"):
-    os.makedirs("../captures")
+CAPTURES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../captures"))
+os.makedirs(CAPTURES_DIR, exist_ok=True)
 
 # Mount captures for viewing
-app.mount("/captures", StaticFiles(directory="../captures"), name="captures")
+app.mount("/captures", StaticFiles(directory=CAPTURES_DIR), name="captures")
 
 @app.get("/gallery")
 def list_captures():
-    files = glob.glob("../captures/panorama_*.jpg")
-    # Sort by modification time (newest first)
-    files.sort(key=os.path.getmtime, reverse=True)
-    return [os.path.basename(f) for f in files[:6]] # Return latest 6 panorama images
+    base_dir = CAPTURES_DIR
+    if not os.path.exists(base_dir):
+        return []
+
+    items = []
+    # 1. Sequence recording sessions
+    session_dirs = glob.glob(os.path.join(base_dir, "session_*"))
+    for s_dir in session_dirs:
+        if not os.path.isdir(s_dir):
+            continue
+        s_name = os.path.basename(s_dir)
+        files = sorted([
+            f for f in os.listdir(s_dir)
+            if not f.startswith(".") and f != "thumb.jpg" and f.lower().endswith((".tif", ".tiff", ".jpg", ".jpeg", ".png"))
+        ])
+        if not files:
+            continue
+
+        first_frame = files[0]
+        fmt = first_frame.rsplit(".", 1)[-1].lower()
+        thumb_dir = os.path.join(base_dir, "thumbnails")
+        os.makedirs(thumb_dir, exist_ok=True)
+        thumb_path = os.path.join(thumb_dir, f"{s_name}.jpg")
+
+        # Auto-generate Full HD preview/thumbnail if missing
+        if not os.path.exists(thumb_path):
+            try:
+                img = cv2.imread(os.path.join(s_dir, first_frame))
+                if img is not None:
+                    cv2.imwrite(thumb_path, img, [cv2.IMWRITE_JPEG_QUALITY, 99])
+            except Exception as e:
+                event_logger.log(f"Error creating thumbnail for {s_name}: {e}")
+
+        # Parse date and time
+        parts = s_name.replace("session_", "").split("_")
+        if len(parts) >= 2 and len(parts[0]) == 8 and len(parts[1]) >= 6:
+            ymd, hms = parts[0], parts[1]
+            date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
+            time_str = f"{hms[:2]}:{hms[2:4]}:{hms[4:6]}"
+            dt_str = f"{date_str} {time_str}"
+        else:
+            dt = datetime.fromtimestamp(os.path.getmtime(s_dir))
+            date_str = dt.strftime("%Y-%m-%d")
+            time_str = dt.strftime("%H:%M:%S")
+            dt_str = f"{date_str} {time_str}"
+
+        thumb_exists = os.path.exists(thumb_path)
+        thumb_url = f"/captures/thumbnails/{s_name}.jpg" if thumb_exists else f"/captures/{s_name}/{first_frame}"
+        items.append({
+            "id": s_name,
+            "type": "sequence",
+            "name": s_name,
+            "time": time_str,
+            "date": date_str,
+            "datetime": dt_str,
+            "frames": len(files),
+            "first_frame": first_frame,
+            "thumbnail": thumb_url,
+            "url": thumb_url if fmt in ("tif", "tiff") else f"/captures/{s_name}/{first_frame}",
+            "first_frame_url": f"/captures/{s_name}/{first_frame}",
+            "format": fmt,
+            "mtime": os.path.getmtime(s_dir)
+        })
+
+    # 2. Standalone captures (e.g. panorama_*.jpg, seq_*.jpg, etc.)
+    for filepath in glob.glob(os.path.join(base_dir, "*.*")):
+        filename = os.path.basename(filepath)
+        if filename.startswith(".") or filename.endswith(".tmp"):
+            continue
+        if not filename.lower().endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff")):
+            continue
+        mtime = os.path.getmtime(filepath)
+        dt = datetime.fromtimestamp(mtime)
+        fmt = filename.rsplit(".", 1)[-1].lower()
+        items.append({
+            "id": filename,
+            "type": "image",
+            "name": filename,
+            "time": dt.strftime("%H:%M:%S"),
+            "date": dt.strftime("%Y-%m-%d"),
+            "datetime": dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "frames": 1,
+            "first_frame": filename,
+            "thumbnail": f"/captures/{filename}",
+            "url": f"/captures/{filename}",
+            "first_frame_url": f"/captures/{filename}",
+            "format": fmt,
+            "mtime": mtime
+        })
+
+    # Sort newest first and return latest 30 captures
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    return items[:30]
 
 # Configuration persistence
 CONFIG_PATH = "config.json"

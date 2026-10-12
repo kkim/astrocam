@@ -194,7 +194,17 @@ class StreamRecorder:
                 if filename.endswith(".tif") or filename.endswith(".tiff"):
                     cv2.imwrite(filepath, frame)
                 else:
-                    cv2.imwrite(filepath, frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                    cv2.imwrite(filepath, frame, [cv2.IMWRITE_JPEG_QUALITY, 99])
+
+                # Create browser-friendly Full HD thumbnail in base_dir/thumbnails if not already present
+                thumb_dir = os.path.join(self.base_dir, "thumbnails")
+                os.makedirs(thumb_dir, exist_ok=True)
+                thumb_path = os.path.join(thumb_dir, f"{self.session_name}.jpg")
+                if not os.path.exists(thumb_path):
+                    try:
+                        cv2.imwrite(thumb_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 99])
+                    except Exception as te:
+                        event_logger.log(f"Thumbnail creation error: {te}")
 
                 size = os.path.getsize(filepath)
 
@@ -233,6 +243,23 @@ class StreamRecorder:
         duration = round(self.stop_time - self.start_time, 1)
         acc_info = f" (avg ~{self.last_acc_count} frames/stack)" if self.accumulation_ms > 0 else ""
         event_logger.log(f"Stream Recording stopped: {self.frames_count} files saved{acc_info}, {mb} MB in {self.session_name}/")
+
+        # Ensure a Full HD thumbnail exists in base_dir/thumbnails
+        thumb_dir = os.path.join(self.base_dir, "thumbnails")
+        os.makedirs(thumb_dir, exist_ok=True)
+        thumb_path = os.path.join(thumb_dir, f"{self.session_name}.jpg")
+        if not os.path.exists(thumb_path) and self.session_path and os.path.exists(self.session_path):
+            frames = sorted([
+                f for f in os.listdir(self.session_path)
+                if not f.startswith(".") and f.lower().endswith((".tif", ".tiff", ".jpg", ".jpeg", ".png"))
+            ])
+            if frames:
+                try:
+                    img = cv2.imread(os.path.join(self.session_path, frames[0]))
+                    if img is not None:
+                        cv2.imwrite(thumb_path, img, [cv2.IMWRITE_JPEG_QUALITY, 99])
+                except Exception as te:
+                    event_logger.log(f"Thumbnail generation error: {te}")
 
         return {
             "success": True,

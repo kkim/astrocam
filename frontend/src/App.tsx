@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circle, Square } from 'lucide-react';
+import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circle, Square, Layers } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -52,6 +52,21 @@ interface MotorStatus {
   is_ramping?: boolean;
 }
 
+interface GalleryItem {
+  id: string;
+  type?: 'sequence' | 'image';
+  name?: string;
+  time?: string;
+  date?: string;
+  datetime?: string;
+  frames?: number;
+  first_frame?: string;
+  thumbnail: string;
+  url: string;
+  first_frame_url?: string;
+  format?: string;
+}
+
 function App() {
   const [controls, setControls] = useState<Controls>({
     brightness: 128, contrast: 32, saturation: 64, gain: 0,
@@ -59,7 +74,7 @@ function App() {
   });
   const [status, setStatus] = useState<string>('Ready');
   const [logs, setLogs] = useState<string[]>([]);
-  const [captures, setCaptures] = useState<string[]>([]);
+  const [captures, setCaptures] = useState<GalleryItem[]>([]);
   const [cameraEngine, setCameraEngine] = useState<string>('mock');
   const [mountEngine, setMountEngine] = useState<string>('mock');
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
@@ -137,7 +152,37 @@ function App() {
         if (lRes.ok) setLogs(await lRes.json());
 
         const capRes = await fetch(`${API_BASE}/gallery`);
-        if (capRes.ok) setCaptures(await capRes.json());
+        if (capRes.ok) {
+          const data = await capRes.json();
+          if (Array.isArray(data)) {
+            const formatted: GalleryItem[] = data.map((item: any) => {
+              if (typeof item === 'string') {
+                return {
+                  id: item,
+                  type: 'image',
+                  time: '',
+                  date: '',
+                  datetime: item,
+                  frames: 1,
+                  thumbnail: `${API_BASE}/captures/${item}`,
+                  url: `${API_BASE}/captures/${item}`
+                };
+              }
+              const thumbUrl = item.thumbnail?.startsWith('http')
+                ? item.thumbnail
+                : `${API_BASE}${item.thumbnail?.startsWith('/') ? '' : '/'}${item.thumbnail || ''}`;
+              const fullUrl = item.url?.startsWith('http')
+                ? item.url
+                : `${API_BASE}${item.url?.startsWith('/') ? '' : '/'}${item.url || ''}`;
+              return {
+                ...item,
+                thumbnail: thumbUrl,
+                url: fullUrl
+              };
+            });
+            setCaptures(formatted);
+          }
+        }
 
         const rRes = await fetch(`${API_BASE}/rig`);
         if (rRes.ok) {
@@ -306,6 +351,18 @@ function App() {
             }));
             const accMsg = data.accumulation_ms > 0 ? ` (~${data.accumulated_frames} frames/stack)` : '';
             showToast(`Recording stopped: ${data.frames} files saved${accMsg} (${data.mb_stored} MB)`, 3500);
+            fetch(`${API_BASE}/gallery`)
+              .then(res => res.json())
+              .then(gData => {
+                if (Array.isArray(gData)) {
+                  setCaptures(gData.map((item: any) => ({
+                    ...item,
+                    thumbnail: item.thumbnail?.startsWith('http') ? item.thumbnail : `${API_BASE}${item.thumbnail?.startsWith('/') ? '' : '/'}${item.thumbnail || ''}`,
+                    url: item.url?.startsWith('http') ? item.url : `${API_BASE}${item.url?.startsWith('/') ? '' : '/'}${item.url || ''}`
+                  })));
+                }
+              })
+              .catch(e => console.error("Gallery refresh error:", e));
           } else {
             showToast(`Error: ${data.error || 'Failed to stop recording'}`, 4000);
           }
@@ -432,12 +489,31 @@ function App() {
             </div>
             <div className="captures-grid">
               {!Array.isArray(captures) || captures.length === 0 ? (
-                <div className="empty-msg">No images captured</div>
+                <div className="empty-msg">No sequences recorded yet</div>
               ) : (
-                captures.map(file => (
-                  <div key={file} className="capture-item" title={file} onClick={() => window.open(`${API_BASE}/captures/${file}`, '_blank')}>
-                    <img src={`${API_BASE}/captures/${file}`} alt={file} loading="lazy" />
-                    <div className="capture-label">{file}</div>
+                captures.map(item => (
+                  <div 
+                    key={item.id} 
+                    className="capture-item" 
+                    title={`${item.datetime || item.id} • ${item.frames || 1} ${(item.frames || 1) === 1 ? 'frame' : 'frames'}${item.format ? ` (${item.format.toUpperCase()})` : ''}`} 
+                    onClick={() => window.open(item.url, '_blank')}
+                  >
+                    <img src={item.thumbnail} alt={item.datetime || item.id} loading="lazy" />
+                    
+                    {item.frames !== undefined && item.frames > 0 && (
+                      <div className="capture-badge">
+                        <Layers size={11} />
+                        <span>{item.frames} {item.frames === 1 ? 'frame' : 'frames'}</span>
+                      </div>
+                    )}
+
+                    <div className="capture-label">
+                      <div className="capture-time-row">
+                        <span className="capture-time">{item.time || item.id}</span>
+                        {item.format && <span className="capture-fmt-tag">{item.format.toUpperCase()}</span>}
+                      </div>
+                      {item.date && <div className="capture-date-row">{item.date}</div>}
+                    </div>
                   </div>
                 ))
               )}
