@@ -7,6 +7,7 @@ const API_BASE = `http://${window.location.hostname}:8000`;
 const EXPOSURE_PRESETS = [
   { label: '10ms', value: 100 },
   { label: '20ms', value: 200 },
+  { label: '30ms', value: 300 },
   { label: '50ms', value: 500 },
   { label: '100ms', value: 1000 },
   { label: '250ms', value: 2500 },
@@ -129,7 +130,7 @@ const formatGalleryItem = (item: any): GalleryItem => {
 function App() {
   const [controls, setControls] = useState<Controls>({
     brightness: 128, contrast: 32, saturation: 64, gain: 0,
-    exposure: 156, sharpness: 0, average: 1, auto_exposure: 0
+    exposure: 300, sharpness: 0, average: 1, auto_exposure: 0
   });
   const [status, setStatus] = useState<string>('Ready');
   const [logs, setLogs] = useState<string[]>([]);

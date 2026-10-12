@@ -18,7 +18,7 @@ class MockAstroRig(BaseAstroRig):
         # Camera parameters
         self.params = {
             "brightness": 128, "contrast": 32, "saturation": 64,
-            "gain": 0, "exposure": 156, "sharpness": 2, "auto_exposure": 0
+            "gain": 0, "exposure": 300, "sharpness": 2, "auto_exposure": 0
         }
         
         # Motor state
@@ -88,9 +88,6 @@ class MockAstroRig(BaseAstroRig):
         return [(sx, sy, self._create_star_patch(radius=radius, peak=peak)) for sx, sy, peak in all_stars]
 
     def _sim_loop(self):
-        target_fps = 36.0
-        target_dt = 1.0 / target_fps  # Target period yielding ~33 FPS with system scheduling
-
         while self.is_running:
             t_start = time.perf_counter()
             now = time.time()
@@ -117,11 +114,11 @@ class MockAstroRig(BaseAstroRig):
                 self.raw_frame = frame
                 self.frame_id += 1
 
-            exp_sec = float(self.params.get("exposure", 156)) * 0.0001
-            target_interval = max(target_dt, exp_sec)
+            exp_val = float(self.params.get("exposure", 300))
+            exp_sec = max(exp_val * 0.0001, 0.005)
 
             elapsed = time.perf_counter() - t_start
-            sleep_time = max(0.001, target_interval - elapsed)
+            sleep_time = max(0.0005, exp_sec - elapsed)
             time.sleep(sleep_time)
 
     def _generate_mock_frame(self):
@@ -129,9 +126,9 @@ class MockAstroRig(BaseAstroRig):
         ox = (self.frame_id * 29) % 64
         frame = self.noise_canvas[oy : oy + self.height, ox : ox + self.width].copy()
         
-        exp_val = float(self.params.get("exposure", 156))
+        exp_val = float(self.params.get("exposure", 300))
         gain_val = float(self.params.get("gain", 0))
-        exp_factor = max(exp_val / 156.0, 0.01)
+        exp_factor = max(exp_val / 300.0, 0.01)
         gain_factor = 1.0 + (gain_val / 64.0)
         flux_factor = exp_factor * gain_factor
 

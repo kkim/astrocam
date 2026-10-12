@@ -24,7 +24,7 @@ class MockCamera:
 
         self.params: Dict[str, Any] = {
             "brightness": 128, "contrast": 32, "saturation": 64,
-            "gain": 0, "exposure": 156, "sharpness": 0, "auto_exposure": 0
+            "gain": 0, "exposure": 300, "sharpness": 0, "auto_exposure": 0
         }
 
         # Drift position
@@ -105,9 +105,6 @@ class MockCamera:
         return 80.0
 
     def _sim_loop(self):
-        target_fps = 36.0
-        target_dt = 1.0 / target_fps  # Target period yielding ~33 FPS with system scheduling
-
         while self.is_running:
             t_start = time.perf_counter()
             now = time.time()
@@ -136,14 +133,21 @@ class MockCamera:
                 self.raw_frame = frame
                 self.frame_id += 1
 
-            # Realistic camera exposure integration time:
-            # At standard short exposure (156 = ~15.6ms), frame rate runs at full 33 FPS.
-            # When exposure exceeds 30.3ms (e.g. 500ms), frame rate naturally slows down.
-            exp_sec = float(self.params.get("exposure", 156)) * 0.0001
-            target_interval = max(target_dt, exp_sec)
+            # Frame rate is tied directly to exposure integration time:
+            # 1 unit = 100 µs (0.0001 s) -> FPS = 10000 / exposure.
+            # e.g.:
+            #   exposure = 100  (10 ms)  -> 100 FPS
+            #   exposure = 200  (20 ms)  -> 50 FPS
+            #   exposure = 300  (30 ms)  -> 33.3 FPS
+            #   exposure = 500  (50 ms)  -> 20 FPS
+            #   exposure = 1000 (100 ms) -> 10 FPS
+            #   exposure = 5000 (500 ms) -> 2 FPS
+            #   exposure = 10000 (1.0 s) -> 1 FPS
+            exp_val = float(self.params.get("exposure", 300))
+            exp_sec = max(exp_val * 0.0001, 0.005)
 
             elapsed = time.perf_counter() - t_start
-            sleep_time = max(0.001, target_interval - elapsed)
+            sleep_time = max(0.0005, exp_sec - elapsed)
             time.sleep(sleep_time)
 
     def _generate_mock_frame(self, duty: float) -> np.ndarray:
@@ -153,10 +157,10 @@ class MockCamera:
         frame = self.noise_canvas[oy : oy + self.height, ox : ox + self.width].copy()
 
         # 1. Exposure and Gain controls
-        exp_val = float(self.params.get("exposure", 156))
+        exp_val = float(self.params.get("exposure", 300))
         gain_val = float(self.params.get("gain", 0))
 
-        exp_factor = max(exp_val / 156.0, 0.01)
+        exp_factor = max(exp_val / 300.0, 0.01)
         gain_factor = 1.0 + (gain_val / 64.0)
         flux_factor = exp_factor * gain_factor
 
