@@ -128,8 +128,11 @@ class StreamRecorder:
                 dt = datetime.fromtimestamp(capture_time)
                 timestamp_str = dt.strftime("%Y%m%d_%H%M%S_%f")
                 filename = f"{timestamp_str}.{self.file_format}"
+                save_frame = frame
+                if self.file_format in ("tif", "tiff") and frame.dtype == np.uint8:
+                    save_frame = (frame.astype(np.uint16) * 257)
                 try:
-                    self.frame_queue.put_nowait((frame.copy(), filename))
+                    self.frame_queue.put_nowait((save_frame.copy(), filename))
                 except queue.Full:
                     self.dropped_frames += 1
                     if self.dropped_frames % 30 == 1:
@@ -154,7 +157,22 @@ class StreamRecorder:
         if self.acc_buffer is None or self.acc_count <= 0:
             return
 
-        avg_frame = (self.acc_buffer / self.acc_count).clip(0, 255).astype(np.uint8)
+        avg_float = self.acc_buffer / self.acc_count
+        if self.file_format in ("tif", "tiff"):
+            # Accumulate into true 16-bit TIFF:
+            # Scale 8-bit [0, 255] float to full 16-bit dynamic range [0, 65535] (255 * 257 = 65535)
+            # Preserves all fractional accumulation levels with 16-bit depth precision
+            if np.max(avg_float) <= 255.0:
+                avg_frame = np.clip(avg_float * 257.0, 0, 65535).astype(np.uint16)
+            else:
+                avg_frame = np.clip(avg_float, 0, 65535).astype(np.uint16)
+        else:
+            # 8-bit for JPG / PNG
+            if np.max(avg_float) > 255.0:
+                avg_frame = np.clip(avg_float / 257.0, 0, 255).astype(np.uint8)
+            else:
+                avg_frame = np.clip(avg_float, 0, 255).astype(np.uint8)
+
         dt = datetime.fromtimestamp(self.acc_first_timestamp)
         timestamp_str = dt.strftime("%Y%m%d_%H%M%S_%f")
         # Indicate accumulated frame count in the filename
@@ -202,7 +220,10 @@ class StreamRecorder:
                 thumb_path = os.path.join(thumb_dir, f"{self.session_name}.jpg")
                 if not os.path.exists(thumb_path):
                     try:
-                        cv2.imwrite(thumb_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 99])
+                        thumb_img = frame
+                        if thumb_img.dtype == np.uint16:
+                            thumb_img = np.clip(thumb_img / 257.0, 0, 255).astype(np.uint8)
+                        cv2.imwrite(thumb_path, thumb_img, [cv2.IMWRITE_JPEG_QUALITY, 99])
                     except Exception as te:
                         event_logger.log(f"Thumbnail creation error: {te}")
 
@@ -255,8 +276,10 @@ class StreamRecorder:
             ])
             if frames:
                 try:
-                    img = cv2.imread(os.path.join(self.session_path, frames[0]))
+                    img = cv2.imread(os.path.join(self.session_path, frames[0]), cv2.IMREAD_UNCHANGED)
                     if img is not None:
+                        if img.dtype == np.uint16:
+                            img = np.clip(img / 257.0, 0, 255).astype(np.uint8)
                         cv2.imwrite(thumb_path, img, [cv2.IMWRITE_JPEG_QUALITY, 99])
                 except Exception as te:
                     event_logger.log(f"Thumbnail generation error: {te}")

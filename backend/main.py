@@ -62,8 +62,10 @@ def list_captures():
         # Auto-generate Full HD preview/thumbnail if missing
         if not os.path.exists(thumb_path):
             try:
-                img = cv2.imread(os.path.join(s_dir, first_frame))
+                img = cv2.imread(os.path.join(s_dir, first_frame), cv2.IMREAD_UNCHANGED)
                 if img is not None:
+                    if img.dtype == np.uint16:
+                        img = np.clip(img / 257.0, 0, 255).astype(np.uint8)
                     cv2.imwrite(thumb_path, img, [cv2.IMWRITE_JPEG_QUALITY, 99])
             except Exception as e:
                 event_logger.log(f"Error creating thumbnail for {s_name}: {e}")
