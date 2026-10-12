@@ -78,6 +78,7 @@ function App() {
   const [cameraEngine, setCameraEngine] = useState<string>('mock');
   const [mountEngine, setMountEngine] = useState<string>('mock');
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const [accumulationMs, setAccumulationMs] = useState<number>(1000);
   const [recordFormat, setRecordFormat] = useState<'tif' | 'jpg'>('tif');
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({
     is_recording: false,
@@ -348,7 +349,8 @@ function App() {
               mb_stored: data.mb_stored,
               directory: data.directory
             }));
-            showToast(`Recording stopped: ${data.frames} files saved (${data.mb_stored} MB)`, 3500);
+            const accMsg = (data.accumulation_ms > 0 && data.accumulated_frames > 1) ? ` (~${data.accumulated_frames} f/stack 16-bit)` : '';
+            showToast(`Recording stopped: ${data.frames} files saved${accMsg} (${data.mb_stored} MB)`, 3500);
             fetch(`${API_BASE}/gallery`)
               .then(res => res.json())
               .then(gData => {
@@ -372,7 +374,7 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          accumulation_ms: 0,
+          accumulation_ms: accumulationMs,
           format: recordFormat
         })
       })
@@ -385,7 +387,7 @@ function App() {
               frames: 0,
               raw_frames: 0,
               accumulated_frames: 1,
-              accumulation_ms: 0,
+              accumulation_ms: data.accumulation_ms ?? accumulationMs,
               format: data.format ?? recordFormat,
               mb_stored: 0,
               directory: data.directory,
@@ -635,6 +637,44 @@ function App() {
           <div className="control-section">
             <div className="section-header"><Zap size={16} /> Stream Recording</div>
             <div className="control-group">
+              <label>Burst Stacking Window</label>
+              <div className="preset-row">
+                <button 
+                  className={accumulationMs === 0 ? 'active' : ''} 
+                  onClick={() => setAccumulationMs(0)}
+                  disabled={recordingStatus.is_recording}
+                  title="Raw: Record every individual sub-exposure directly"
+                >
+                  Raw (1 f)
+                </button>
+                <button 
+                  className={accumulationMs === 200 ? 'active' : ''} 
+                  onClick={() => setAccumulationMs(200)}
+                  disabled={recordingStatus.is_recording}
+                  title="200ms burst stack (~5 FPS 16-bit TIFFs)"
+                >
+                  200ms
+                </button>
+                <button 
+                  className={accumulationMs === 500 ? 'active' : ''} 
+                  onClick={() => setAccumulationMs(500)}
+                  disabled={recordingStatus.is_recording}
+                  title="500ms burst stack (~2 FPS 16-bit TIFFs)"
+                >
+                  500ms
+                </button>
+                <button 
+                  className={accumulationMs === 1000 ? 'active' : ''} 
+                  onClick={() => setAccumulationMs(1000)}
+                  disabled={recordingStatus.is_recording}
+                  title="1000ms burst stack (~1 FPS high-SNR 16-bit TIFFs)"
+                >
+                  1000ms (1s)
+                </button>
+              </div>
+            </div>
+
+            <div className="control-group" style={{ marginTop: '8px' }}>
               <label>Capture Format</label>
               <div className="preset-row">
                 <button 
@@ -714,18 +754,18 @@ function App() {
             <div className="recording-panel">
               <div className="recording-header">
                 <span className="rec-badge">
-                  <span className="rec-dot"></span> REC ({recordFormat.toUpperCase()})
+                  <span className="rec-dot"></span> REC ({recordFormat.toUpperCase()}{(recordingStatus.accumulation_ms ?? 0) > 0 ? ` • ${recordingStatus.accumulation_ms}ms` : ''})
                 </span>
                 <span className="rec-dir" title={recordingStatus.directory}>
                   {recordingStatus.directory}
                 </span>
               </div>
               <div className="recording-stats">
-                <div className="rec-stat">
-                  <span className="stat-label">Saved</span>
+                <div className="rec-stat" title={(recordingStatus.accumulation_ms ?? 0) > 0 ? `${recordingStatus.raw_frames ?? recordingStatus.frames} raw sub-exposures integrated into ${recordingStatus.frames} stacks` : `${recordingStatus.frames} saved frames`}>
+                  <span className="stat-label">{(recordingStatus.accumulation_ms ?? 0) > 0 ? 'Stacks' : 'Saved'}</span>
                   <span className="stat-val">{recordingStatus.frames}</span>
                 </div>
-                <div className="rec-stat">
+                <div className="rec-stat" title="Saved frame write rate">
                   <span className="stat-label">Rate</span>
                   <span className="stat-val">{(recordingStatus.fps || 0).toFixed(1)} <small>fps</small></span>
                 </div>
@@ -746,11 +786,11 @@ function App() {
             <div className="recording-panel stopped">
               {recordingStatus.frames > 0 && (
                 <div className="last-rec-info">
-                  Last: {recordingStatus.frames} files ({(recordingStatus.mb_stored || 0).toFixed(1)} MB)
+                  Last: {recordingStatus.frames} {(recordingStatus.accumulation_ms ?? 0) > 0 ? 'stacks' : 'files'}{(recordingStatus.accumulation_ms ?? 0) > 0 && (recordingStatus.accumulated_frames ?? 0) > 1 ? ` (~${recordingStatus.accumulated_frames} subs/stack)` : ''} ({(recordingStatus.mb_stored || 0).toFixed(1)} MB)
                 </div>
               )}
               <button className="btn-record start" onClick={handleToggleRecording}>
-                <Circle size={14} fill="#ff4d4f" color="#ff4d4f" /> Start Recording ({recordFormat.toUpperCase()})
+                <Circle size={14} fill="#ff4d4f" color="#ff4d4f" /> {accumulationMs > 0 ? `Record ${accumulationMs}ms Stack (${recordFormat.toUpperCase()})` : `Record Raw (${recordFormat.toUpperCase()})`}
               </button>
             </div>
           )}
