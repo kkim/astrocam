@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import uvicorn
 import cv2
+import numpy as np
 import os
 import asyncio
 from datetime import datetime
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 from typing import Optional
 import glob
 import json
+from mosaic_service import get_session_mosaic_info, trigger_mosaic_stitching
 
 app = FastAPI()
 
@@ -83,6 +85,9 @@ def list_captures():
             time_str = dt.strftime("%H:%M:%S")
             dt_str = f"{date_str} {time_str}"
 
+        # Mosaic availability info
+        mosaic_info = get_session_mosaic_info(s_dir, s_name)
+
         thumb_exists = os.path.exists(thumb_path)
         thumb_url = f"/captures/thumbnails/{s_name}.jpg" if thumb_exists else f"/captures/{s_name}/{first_frame}"
         items.append({
@@ -95,9 +100,13 @@ def list_captures():
             "frames": len(files),
             "first_frame": first_frame,
             "thumbnail": thumb_url,
-            "url": thumb_url if fmt in ("tif", "tiff") else f"/captures/{s_name}/{first_frame}",
+            "url": mosaic_info["mosaic_url"] if mosaic_info["mosaic_url"] else (thumb_url if fmt in ("tif", "tiff") else f"/captures/{s_name}/{first_frame}"),
             "first_frame_url": f"/captures/{s_name}/{first_frame}",
             "format": fmt,
+            "has_mosaic": mosaic_info["has_mosaic"],
+            "mosaic_status": mosaic_info["mosaic_status"],
+            "mosaic_url": mosaic_info["mosaic_url"],
+            "mosaic_mtime": mosaic_info["mosaic_mtime"],
             "mtime": os.path.getmtime(s_dir)
         })
 
@@ -124,12 +133,30 @@ def list_captures():
             "url": f"/captures/{filename}",
             "first_frame_url": f"/captures/{filename}",
             "format": fmt,
+            "has_mosaic": False,
+            "mosaic_status": "none",
+            "mosaic_url": None,
+            "mosaic_mtime": 0,
             "mtime": mtime
         })
 
     # Sort newest first and return latest 30 captures
     items.sort(key=lambda x: x["mtime"], reverse=True)
     return items[:30]
+
+@app.post("/mosaic/generate/{session_id}")
+def generate_mosaic(session_id: str):
+    s_dir = os.path.join(CAPTURES_DIR, session_id)
+    if not os.path.isdir(s_dir):
+        return {"success": False, "error": f"Session {session_id} not found"}
+    return trigger_mosaic_stitching(session_id, s_dir)
+
+@app.get("/mosaic/status/{session_id}")
+def get_mosaic_status(session_id: str):
+    s_dir = os.path.join(CAPTURES_DIR, session_id)
+    if not os.path.isdir(s_dir):
+        return {"status": "none"}
+    return get_session_mosaic_info(s_dir, session_id)
 
 # Configuration persistence
 CONFIG_PATH = "config.json"

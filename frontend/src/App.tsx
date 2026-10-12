@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circle, Square, Layers } from 'lucide-react';
+import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circle, Square, Layers, Sparkles } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -86,7 +86,45 @@ interface GalleryItem {
   url: string;
   first_frame_url?: string;
   format?: string;
+  has_mosaic?: boolean;
+  mosaic_status?: 'ready' | 'processing' | 'none';
+  mosaic_url?: string;
+  mosaic_mtime?: number;
 }
+
+const formatGalleryItem = (item: any): GalleryItem => {
+  if (typeof item === 'string') {
+    return {
+      id: item,
+      type: 'image',
+      time: '',
+      date: '',
+      datetime: item,
+      frames: 1,
+      thumbnail: `${API_BASE}/captures/${item}`,
+      url: `${API_BASE}/captures/${item}`,
+      has_mosaic: false,
+      mosaic_status: 'none'
+    };
+  }
+  const thumbUrl = item.thumbnail?.startsWith('http')
+    ? item.thumbnail
+    : `${API_BASE}${item.thumbnail?.startsWith('/') ? '' : '/'}${item.thumbnail || ''}`;
+  const fullUrl = item.url?.startsWith('http')
+    ? item.url
+    : `${API_BASE}${item.url?.startsWith('/') ? '' : '/'}${item.url || ''}`;
+  const mosaicUrl = item.mosaic_url
+    ? (item.mosaic_url.startsWith('http') ? item.mosaic_url : `${API_BASE}${item.mosaic_url.startsWith('/') ? '' : '/'}${item.mosaic_url}`)
+    : undefined;
+  return {
+    ...item,
+    thumbnail: thumbUrl,
+    url: fullUrl,
+    mosaic_url: mosaicUrl,
+    mosaic_status: item.mosaic_status || 'none',
+    has_mosaic: !!item.has_mosaic
+  };
+};
 
 function App() {
   const [controls, setControls] = useState<Controls>({
@@ -176,32 +214,7 @@ function App() {
         if (capRes.ok) {
           const data = await capRes.json();
           if (Array.isArray(data)) {
-            const formatted: GalleryItem[] = data.map((item: any) => {
-              if (typeof item === 'string') {
-                return {
-                  id: item,
-                  type: 'image',
-                  time: '',
-                  date: '',
-                  datetime: item,
-                  frames: 1,
-                  thumbnail: `${API_BASE}/captures/${item}`,
-                  url: `${API_BASE}/captures/${item}`
-                };
-              }
-              const thumbUrl = item.thumbnail?.startsWith('http')
-                ? item.thumbnail
-                : `${API_BASE}${item.thumbnail?.startsWith('/') ? '' : '/'}${item.thumbnail || ''}`;
-              const fullUrl = item.url?.startsWith('http')
-                ? item.url
-                : `${API_BASE}${item.url?.startsWith('/') ? '' : '/'}${item.url || ''}`;
-              return {
-                ...item,
-                thumbnail: thumbUrl,
-                url: fullUrl
-              };
-            });
-            setCaptures(formatted);
+            setCaptures(data.map(formatGalleryItem));
           }
         }
 
@@ -376,11 +389,7 @@ function App() {
               .then(res => res.json())
               .then(gData => {
                 if (Array.isArray(gData)) {
-                  setCaptures(gData.map((item: any) => ({
-                    ...item,
-                    thumbnail: item.thumbnail?.startsWith('http') ? item.thumbnail : `${API_BASE}${item.thumbnail?.startsWith('/') ? '' : '/'}${item.thumbnail || ''}`,
-                    url: item.url?.startsWith('http') ? item.url : `${API_BASE}${item.url?.startsWith('/') ? '' : '/'}${item.url || ''}`
-                  })));
+                  setCaptures(gData.map(formatGalleryItem));
                 }
               })
               .catch(e => console.error("Gallery refresh error:", e));
@@ -460,6 +469,56 @@ function App() {
     }
   };
 
+  const handleThumbnailClick = async (item: GalleryItem) => {
+    if (item.type !== 'sequence') {
+      window.open(item.url, '_blank');
+      return;
+    }
+
+    if (item.mosaic_status === 'ready' && item.mosaic_url) {
+      const cacheBust = item.mosaic_mtime ? `?t=${Math.floor(item.mosaic_mtime)}` : `?t=${Date.now()}`;
+      window.open(`${item.mosaic_url}${cacheBust}`, '_blank');
+      return;
+    }
+
+    if (item.mosaic_status === 'processing') {
+      showToast('Mosaic is currently being processed. Opening preview...', 2500);
+      const targetUrl = item.mosaic_url || item.url;
+      window.open(`${targetUrl}?t=${Date.now()}`, '_blank');
+      return;
+    }
+
+    showToast(`Generating mosaic for ${item.id}...`, 3000);
+    setCaptures(prev => prev.map(c => c.id === item.id ? { ...c, mosaic_status: 'processing' } : c));
+
+    try {
+      const res = await fetch(`${API_BASE}/mosaic/generate/${item.id}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success && data.url) {
+        const fullUrl = data.url.startsWith('http')
+          ? data.url
+          : `${API_BASE}${data.url.startsWith('/') ? '' : '/'}${data.url}`;
+        window.open(`${fullUrl}?t=${Date.now()}`, '_blank');
+        setTimeout(() => {
+          fetch(`${API_BASE}/gallery`)
+            .then(r => r.json())
+            .then(gData => {
+              if (Array.isArray(gData)) {
+                setCaptures(gData.map(formatGalleryItem));
+              }
+            })
+            .catch(() => {});
+        }, 800);
+      } else {
+        showToast(`Error: ${data.error || 'Failed to start mosaic'}`, 4000);
+        setCaptures(prev => prev.map(c => c.id === item.id ? { ...c, mosaic_status: 'none' } : c));
+      }
+    } catch (err: any) {
+      showToast(`Mosaic request failed: ${err.message}`, 4000);
+      setCaptures(prev => prev.map(c => c.id === item.id ? { ...c, mosaic_status: 'none' } : c));
+    }
+  };
+
   return (
     <div className={`app-container ${isSidebarOpen ? 'sidebar-open' : ''}`}>
       <button className="mobile-toggle" onClick={() => setIsSidebarOpen(!isSidebarOpen)}>
@@ -512,31 +571,61 @@ function App() {
               {!Array.isArray(captures) || captures.length === 0 ? (
                 <div className="empty-msg">No sequences recorded yet</div>
               ) : (
-                captures.map(item => (
-                  <div 
-                    key={item.id} 
-                    className="capture-item" 
-                    title={`${item.datetime || item.id} • ${item.frames || 1} ${(item.frames || 1) === 1 ? 'frame' : 'frames'}${item.format ? ` (${item.format.toUpperCase()})` : ''}`} 
-                    onClick={() => window.open(item.url, '_blank')}
-                  >
-                    <img src={item.thumbnail} alt={item.datetime || item.id} loading="lazy" />
-                    
-                    {item.frames !== undefined && item.frames > 0 && (
-                      <div className="capture-badge">
-                        <Layers size={11} />
-                        <span>{item.frames} {item.frames === 1 ? 'frame' : 'frames'}</span>
-                      </div>
-                    )}
+                captures.map(item => {
+                  const isSeq = item.type === 'sequence';
+                  const titleTip = isSeq
+                    ? `${item.datetime || item.id} • ${item.frames || 1} frames • Mosaic: ${item.mosaic_status === 'ready' ? 'Ready (Click to View)' : item.mosaic_status === 'processing' ? 'Processing (Click to View Preview)' : 'Not Created (Click to Stitch Mosaic)'}`
+                    : `${item.datetime || item.id} • Single frame`;
 
-                    <div className="capture-label">
-                      <div className="capture-time-row">
-                        <span className="capture-time">{item.time || item.id}</span>
-                        {item.format && <span className="capture-fmt-tag">{item.format.toUpperCase()}</span>}
+                  return (
+                    <div 
+                      key={item.id} 
+                      className="capture-item" 
+                      title={titleTip} 
+                      onClick={() => handleThumbnailClick(item)}
+                    >
+                      <img src={item.thumbnail} alt={item.datetime || item.id} loading="lazy" />
+                      
+                      {isSeq && (
+                        <>
+                          {item.mosaic_status === 'ready' && (
+                            <div className="mosaic-badge ready" title="16-bit Mosaic Ready (Click to View)">
+                              <Sparkles size={11} />
+                              <span>Mosaic Ready</span>
+                            </div>
+                          )}
+                          {item.mosaic_status === 'processing' && (
+                            <div className="mosaic-badge processing" title="Mosaic is being processed...">
+                              <RefreshCw size={11} className="spin" />
+                              <span>Processing...</span>
+                            </div>
+                          )}
+                          {item.mosaic_status === 'none' && (
+                            <div className="mosaic-badge none" title="Click thumbnail to stitch mosaic">
+                              <Layers size={11} />
+                              <span>Stitch Mosaic</span>
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {item.frames !== undefined && item.frames > 0 && (
+                        <div className="capture-badge">
+                          <Layers size={11} />
+                          <span>{item.frames} {item.frames === 1 ? 'frame' : 'frames'}</span>
+                        </div>
+                      )}
+
+                      <div className="capture-label">
+                        <div className="capture-time-row">
+                          <span className="capture-time">{item.time || item.id}</span>
+                          {item.format && <span className="capture-fmt-tag">{item.format.toUpperCase()}</span>}
+                        </div>
+                        {item.date && <div className="capture-date-row">{item.date}</div>}
                       </div>
-                      {item.date && <div className="capture-date-row">{item.date}</div>}
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </section>

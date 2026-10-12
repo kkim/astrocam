@@ -229,6 +229,47 @@ body, html, #root {
   z-index: 2;
 }
 
+.mosaic-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  backdrop-filter: blur(4px);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 5px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+  z-index: 2;
+  transition: all 0.2s ease;
+}
+
+.mosaic-badge.ready {
+  background: rgba(35, 134, 54, 0.85);
+  color: #7ee787;
+  border: 1px solid rgba(86, 211, 100, 0.5);
+}
+
+.mosaic-badge.processing {
+  background: rgba(187, 128, 9, 0.85);
+  color: #f0b72f;
+  border: 1px solid rgba(227, 179, 65, 0.5);
+}
+
+.mosaic-badge.none {
+  background: rgba(22, 27, 34, 0.85);
+  color: #8b949e;
+  border: 1px solid rgba(48, 54, 61, 0.8);
+}
+
+.capture-item:hover .mosaic-badge.none {
+  border-color: var(--accent);
+  color: #58a6ff;
+  background: rgba(13, 17, 23, 0.95);
+}
+
 .capture-label {
   position: absolute;
   bottom: 0;
