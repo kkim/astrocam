@@ -1,6 +1,6 @@
 from .models import AlignmentConfig, AlignmentResult, AlignmentStatus, ReferenceFeatures
 from .geometry import scale_down, transform, transform_image, compose_transforms
-from .detector import StarDetector, detect_stars
+from .detector import StarDetector, detect_stars, find_bright_star_centroid
 from .matcher import StarMatcher, compute_star_descriptors, match_star_descriptors
 from .estimator import TransformEstimator
 from .engine import StarAligner, align_images
@@ -16,6 +16,7 @@ __all__ = [
     "compose_transforms",
     "StarDetector",
     "detect_stars",
+    "find_bright_star_centroid",
     "StarMatcher",
     "compute_star_descriptors",
     "match_star_descriptors",

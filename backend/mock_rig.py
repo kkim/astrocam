@@ -58,16 +58,43 @@ class MockAstroRig(BaseAstroRig):
         self.thread = threading.Thread(target=self._sim_loop, daemon=True)
         self.thread.start()
 
+    def _create_star_profile(self, radius: int = 5, peak: float = 220.0, sigma: float = 2.0) -> np.ndarray:
+        y, x = np.ogrid[-radius:radius+1, -radius:radius+1]
+        dist_sq = x*x + y*y
+        mask = dist_sq <= radius*radius
+        profile = np.exp(-dist_sq / (2.0 * sigma**2)) * mask
+        return (profile * peak).astype(np.float32)
+
     def _generate_static_starfield(self):
-        img = np.zeros((self.full_height, self.full_width, 3), dtype=np.uint8)
-        rng = np.random.default_rng(42)
-        for _ in range(5000):
-            x = rng.integers(0, self.full_width)
-            y = rng.integers(0, self.full_height)
-            size = rng.choice([0, 1, 2, 4], p=[0.9, 0.09, 0.009, 0.001])
-            brightness = int(rng.integers(150, 255))
-            cv2.circle(img, (x, y), int(size), (brightness, brightness, brightness), -1)
-        return img
+        canvas = np.zeros((self.full_height, self.full_width, 3), dtype=np.float32)
+        radius = 5
+
+        bright_star = (int(self.full_width * 0.45), int(self.full_height * 0.45), 220.0)
+        dim_stars = [
+            (bright_star[0] + 250, bright_star[1] - 170, 10.0),
+            (bright_star[0] - 320, bright_star[1] + 180, 9.5),
+        ]
+        very_dim_stars = [
+            (bright_star[0] - 140, bright_star[1] - 210, 2.8),
+            (bright_star[0] + 370, bright_star[1] + 120, 2.0),
+            (bright_star[0] + 160, bright_star[1] + 250, 1.6),
+            (bright_star[0] - 410, bright_star[1] - 150, 2.2),
+        ]
+
+        all_stars = [bright_star] + dim_stars + very_dim_stars
+        for sx, sy, peak in all_stars:
+            prof = self._create_star_profile(radius=radius, peak=peak)
+            y1 = max(0, sy - radius)
+            y2 = min(self.full_height, sy + radius + 1)
+            x1 = max(0, sx - radius)
+            x2 = min(self.full_width, sx + radius + 1)
+            py1 = y1 - (sy - radius)
+            py2 = py1 + (y2 - y1)
+            px1 = x1 - (sx - radius)
+            px2 = px1 + (x2 - x1)
+            canvas[y1:y2, x1:x2, :] += prof[py1:py2, px1:px2, None]
+
+        return canvas
 
     def _sim_loop(self):
         while self.is_running:
@@ -79,7 +106,6 @@ class MockAstroRig(BaseAstroRig):
             v_diurnal_y = self.sim_drift_speed * np.sin(self.sim_drift_angle)
             
             # Mount compensation vector: at 85% duty cycle, mount speed matches sim_drift_speed
-            # and moves in the direction opposite to the camera_angle to cancel out drift.
             v_mount_mag = - (self.current_duty / 85.0) * self.sim_drift_speed
             v_mount_x = v_mount_mag * np.cos(self.camera_angle)
             v_mount_y = v_mount_mag * np.sin(self.camera_angle)
@@ -102,12 +128,46 @@ class MockAstroRig(BaseAstroRig):
         cy = int(self.pos_y)
         crop = self.static_starfield[cy:cy+self.height, cx:cx+self.width].copy()
         
-        # Add dynamic sensor noise
-        noise = np.random.normal(5, 2, (self.height, self.width, 3)).astype(np.uint8)
-        frame = cv2.add(crop, noise)
+        exp_val = float(self.params.get("exposure", 156))
+        gain_val = float(self.params.get("gain", 0))
+        exp_factor = max(exp_val / 156.0, 0.01)
+        gain_factor = 1.0 + (gain_val / 64.0)
+        flux_factor = exp_factor * gain_factor
 
-        cv2.putText(frame, f"MOCK DRIFT - {time.strftime('%H:%M:%S')}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        cv2.putText(frame, f"Speed: {self.current_duty:.1f}%", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+        star_signal = crop * flux_factor
+
+        brightness_val = float(self.params.get("brightness", 128))
+        base_bg = 24.0
+        bg_level = base_bg + (brightness_val - 128.0) * 0.8
+
+        noise_std = 2.5 * np.sqrt(gain_factor)
+        noise = np.random.normal(0.0, noise_std, (self.height, self.width, 3)).astype(np.float32)
+
+        img = bg_level + star_signal + noise
+
+        contrast_val = float(self.params.get("contrast", 32))
+        if contrast_val != 32:
+            slope = contrast_val / 32.0
+            img = 128.0 + (img - 128.0) * slope
+
+        sharpness_val = float(self.params.get("sharpness", 0))
+        if sharpness_val > 0:
+            k = sharpness_val * 0.35
+            kernel = np.array([[0, -k, 0], [-k, 1.0 + 4 * k, -k], [0, -k, 0]], dtype=np.float32)
+            img = cv2.filter2D(img, -1, kernel)
+
+        saturation_val = float(self.params.get("saturation", 64))
+        if saturation_val == 0:
+            gray = 0.299 * img[:, :, 2] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 0]
+            img[:, :, 0] = gray
+            img[:, :, 1] = gray
+            img[:, :, 2] = gray
+        elif saturation_val != 64:
+            sat_scale = max(saturation_val / 64.0, 0.0)
+            gray = (0.299 * img[:, :, 2] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 0])[:, :, None]
+            img = gray + (img - gray) * sat_scale
+
+        frame = np.clip(img, 0.0, 255.0).astype(np.uint8)
         return frame
 
     def get_raw_frame(self):

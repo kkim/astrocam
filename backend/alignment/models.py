@@ -14,20 +14,23 @@ class AlignmentStatus(Enum):
 
 @dataclass
 class AlignmentConfig:
-    """Configuration parameters for star detection, matching, and transformation estimation."""
-    scale_factor: int = 4
+    """Configuration parameters for star detection and x-y translation alignment."""
+    scale_factor: int = 1
     detection_threshold: float = 15.0
     detection_min_dist: int = 5
     max_candidates: int = 300
-    centroid_window: int = 5
+    centroid_window: int = 15
+    patch_radius: int = 15
+    min_snr: float = 3.0
+    min_peak_above_bg: float = 6.0
     n_neighbors: int = 3
     match_max_dist: float = 5.0
     match_lowe_ratio: float = 0.75
     ransac_reproj_threshold: float = 3.0
-    max_translation: float = 100.0
+    max_translation: float = 500.0
     max_scale_diff: float = 0.05
     max_angle_deg: float = 5.0
-    min_matches: int = 3
+    min_matches: int = 1
 
 @dataclass
 class AlignmentResult:
@@ -47,12 +50,19 @@ class AlignmentResult:
 
     def __post_init__(self):
         if not self.metrics:
-            self.metrics = {"inlier_ratio": self.inlier_ratio}
+            self.metrics = {
+                "inlier_ratio": self.inlier_ratio,
+                "match_count": self.match_count,
+                "dx": self.dx,
+                "dy": self.dy,
+                "status": self.status.value if hasattr(self.status, "value") else str(self.status)
+            }
 
 @dataclass
 class ReferenceFeatures:
-    """Precomputed star locations and descriptors for a locked reference frame."""
-    stars: List[Tuple[float, float]]
-    descriptors: np.ndarray
-    valid_stars: List[Tuple[float, float]]
-    scaled_shape: Tuple[int, int]
+    """Precomputed star locations and properties for a locked reference frame."""
+    stars: List[Tuple[float, float]] = field(default_factory=list)
+    descriptors: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), dtype=np.float32))
+    valid_stars: List[Tuple[float, float]] = field(default_factory=list)
+    scaled_shape: Tuple[int, int] = (0, 0)
+    centroid: Optional[Tuple[float, float]] = None

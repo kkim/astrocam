@@ -3,10 +3,81 @@ import numpy as np
 import cv2
 from .models import AlignmentConfig
 
+
+def find_bright_star_centroid(
+    img: np.ndarray,
+    min_snr: float = 3.0,
+    min_peak_above_bg: float = 6.0,
+    patch_radius: int = 15,
+) -> Optional[Tuple[float, float, float, float]]:
+    """
+    Locates the brightest star in the image using blurred peak detection and 
+    sub-pixel center-of-mass centroiding.
+    
+    Args:
+        img: Input image (BGR or grayscale, uint8/uint16/float).
+        min_snr: Minimum peak-to-noise ratio to accept as a valid star.
+        min_peak_above_bg: Minimum intensity increment above background.
+        patch_radius: Radius around peak pixel for center-of-mass calculation.
+        
+    Returns:
+        (cx, cy, peak_val, bg_val) if a distinct star peak is detected, else None.
+    """
+    if img is None:
+        return None
+
+    if len(img.shape) == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img
+
+    gray_f = gray.astype(np.float32)
+    bg_val = float(np.median(gray_f))
+    std_val = float(np.std(gray_f))
+    
+    if std_val < 1e-4:
+        return None
+
+    # Gaussian blur (7x7, sigma=1.5) filters single-pixel sensor noise and hot pixels
+    blurred = cv2.GaussianBlur(gray_f, (7, 7), 1.5)
+    _, max_val, _, max_loc = cv2.minMaxLoc(blurred)
+
+    peak_delta = max_val - bg_val
+    peak_snr = peak_delta / max(std_val, 1e-4)
+
+    if peak_snr < min_snr or peak_delta < min_peak_above_bg:
+        return None
+
+    x0, y0 = max_loc
+    h, w = gray.shape[:2]
+    x_min = max(0, x0 - patch_radius)
+    x_max = min(w, x0 + patch_radius + 1)
+    y_min = max(0, y0 - patch_radius)
+    y_max = min(h, y0 + patch_radius + 1)
+
+    # Sub-pixel center-of-mass on background-subtracted patch
+    patch = np.maximum(gray_f[y_min:y_max, x_min:x_max] - bg_val, 0.0)
+    p_max = float(np.max(patch))
+    if p_max <= 0:
+        return float(x0), float(y0), float(max_val), bg_val
+
+    # Threshold patch at 15% of local peak to ignore distant background fluctuations
+    patch_th = np.where(patch > 0.15 * p_max, patch, 0.0)
+    total_mass = float(np.sum(patch_th))
+    if total_mass <= 0:
+        return float(x0), float(y0), float(max_val), bg_val
+
+    yy, xx = np.indices(patch.shape)
+    cx = float(np.sum(xx * patch_th) / total_mass + x_min)
+    cy = float(np.sum(yy * patch_th) / total_mass + y_min)
+
+    return cx, cy, float(max_val), bg_val
+
+
 class StarDetector:
     """
-    Detects star centroids in grayscale images using morphological dilation
-    for local peak finding, Non-Maximum Suppression (NMS), and sub-pixel centroiding.
+    Detects star centroids in images, with the brightest guide star first,
+    followed by secondary stars sorted by intensity.
     """
     def __init__(self, config: Optional[AlignmentConfig] = None):
         self.config = config or AlignmentConfig()
@@ -19,34 +90,49 @@ class StarDetector:
         max_candidates: Optional[int] = None
     ) -> List[Tuple[float, float]]:
         """
-        Finds local maxima in img_gray that are above threshold,
-        enforces a minimum distance (NMS) to prevent duplicate detections,
-        and refines their positions to sub-pixel centroids.
+        Finds star centroids in img_gray. Prioritizes the brightest star as the
+        first element, followed by secondary stars above the background noise floor.
         """
+        if img_gray is None:
+            return []
+
         th = threshold if threshold is not None else self.config.detection_threshold
         dist = min_dist if min_dist is not None else self.config.detection_min_dist
         max_c = max_candidates if max_candidates is not None else self.config.max_candidates
         win = self.config.centroid_window
-        half_win = win // 2
+        half_win = max(win // 2, 4)
 
-        # Use dilation to find local maxima candidates
-        dilated = cv2.dilate(img_gray, None)
-        local_max = (img_gray == dilated) & (img_gray > th)
+        stars: List[Tuple[float, float]] = []
+
+        # 1. First find the primary brightest guide star
+        bright_res = find_bright_star_centroid(
+            img_gray,
+            min_snr=self.config.min_snr,
+            min_peak_above_bg=self.config.min_peak_above_bg,
+            patch_radius=self.config.patch_radius
+        )
+        if bright_res is not None:
+            stars.append((bright_res[0], bright_res[1]))
+
+        # 2. Search for additional stars using blurred dilation to filter sensor noise
+        gray_f = img_gray.astype(np.float32)
+        bg_val = float(np.median(gray_f))
+        blurred = cv2.GaussianBlur(gray_f, (7, 7), 1.5)
+
+        # Baseline-relative threshold to prevent thousands of false detections on gray background
+        eff_th = bg_val + max(float(th), 4.0)
+        dilated = cv2.dilate(blurred, None)
+        local_max = (blurred == dilated) & (blurred > eff_th)
         y_coords, x_coords = np.where(local_max)
 
         if len(y_coords) == 0:
-            return []
+            return stars
 
-        # Sort local maxima by intensity to prioritize strongest stars in NMS
-        intensities = img_gray[y_coords, x_coords]
-        sort_idx = np.argsort(intensities)[::-1]
+        intensities = blurred[y_coords, x_coords]
+        sort_idx = np.argsort(intensities)[::-1][:max_c]
 
-        # Limit candidates to keep the NMS loop fast
-        sort_idx = sort_idx[:max_c]
-
-        stars: List[Tuple[float, float]] = []
         h, w = img_gray.shape[:2]
-        dist_sq = dist ** 2
+        dist_sq = float(dist ** 2)
 
         for idx in sort_idx:
             x = int(x_coords[idx])
@@ -54,7 +140,7 @@ class StarDetector:
             if x < half_win or x >= w - half_win or y < half_win or y >= h - half_win:
                 continue
 
-            # Non-Maximum Suppression check
+            # Non-Maximum Suppression against already found stars
             too_close = False
             for sx, sy in stars:
                 if (x - sx) ** 2 + (y - sy) ** 2 < dist_sq:
@@ -63,20 +149,26 @@ class StarDetector:
             if too_close:
                 continue
 
-            # Compute subpixel centroid in a window (center of gravity)
-            patch = img_gray[y - half_win : y + half_win + 1, x - half_win : x + half_win + 1].astype(np.float32)
-            patch_sum = patch.sum()
+            # Compute sub-pixel centroid
+            patch = np.maximum(gray_f[y - half_win : y + half_win + 1, x - half_win : x + half_win + 1] - bg_val, 0.0)
+            p_max = float(np.max(patch))
+            if p_max <= 0:
+                stars.append((float(x), float(y)))
+                continue
+
+            patch_th = np.where(patch > 0.15 * p_max, patch, 0.0)
+            patch_sum = float(np.sum(patch_th))
             if patch_sum > 0:
-                xx, yy = np.meshgrid(
-                    np.arange(x - half_win, x + half_win + 1),
-                    np.arange(y - half_win, y + half_win + 1)
-                )
-                cx = float((xx * patch).sum() / patch_sum)
-                cy = float((yy * patch).sum() / patch_sum)
+                yy, xx = np.indices(patch.shape)
+                cx = float(np.sum(xx * patch_th) / patch_sum + (x - half_win))
+                cy = float(np.sum(yy * patch_th) / patch_sum + (y - half_win))
                 stars.append((cx, cy))
+            else:
+                stars.append((float(x), float(y)))
 
         return stars
 
+
 def detect_stars(img_gray: np.ndarray, threshold: float = 15, min_dist: int = 5) -> List[Tuple[float, float]]:
-    """Legacy helper function for standalone star detection."""
+    """Helper function for standalone star detection."""
     return StarDetector().detect(img_gray, threshold=threshold, min_dist=min_dist)
