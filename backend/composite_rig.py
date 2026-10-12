@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 import numpy as np
 from base_rig import BaseAstroRig
 
@@ -53,6 +53,12 @@ class CompositeAstroRig(BaseAstroRig):
     # Camera delegations
     def get_raw_frame(self) -> Optional[np.ndarray]:
         return self.camera.get_raw_frame()
+
+    def get_fresh_frame(self, last_frame_id: int = -1) -> Tuple[Optional[np.ndarray], int]:
+        if hasattr(self.camera, "get_fresh_frame"):
+            return self.camera.get_fresh_frame(last_frame_id)
+        frame = self.camera.get_raw_frame()
+        return frame, last_frame_id + 1
 
     def set_camera_param(self, prop: str, value: float) -> bool:
         return self.camera.set_camera_param(prop, value)

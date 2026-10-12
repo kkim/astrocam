@@ -4,7 +4,7 @@ import time
 import numpy as np
 import os
 import json
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, Tuple
 from logger import event_logger
 
 class MockCamera:
@@ -18,6 +18,7 @@ class MockCamera:
         self.full_width = int(self.width * 2.0)
         self.full_height = int(self.height * 1.5)
         self.is_running = True
+        self.frame_id: int = 0
         self.lock = threading.Lock()
         self.get_duty_callback = get_duty_callback
 
@@ -97,7 +98,11 @@ class MockCamera:
             frame = self._generate_mock_frame(duty)
             with self.lock:
                 self.raw_frame = frame
-            time.sleep(0.04) # ~25 FPS
+                self.frame_id += 1
+
+            # Simulate realistic camera exposure integration time
+            exp_sec = self.params.get("exposure", 156) * 0.0001
+            time.sleep(max(exp_sec, 0.033))
 
     def _generate_mock_frame(self, duty: float) -> np.ndarray:
         cx = int(self.pos_x)
@@ -122,6 +127,13 @@ class MockCamera:
             if self.raw_frame is None:
                 return None
             return self.raw_frame.copy()
+
+    def get_fresh_frame(self, last_frame_id: int = -1) -> Tuple[Optional[np.ndarray], int]:
+        """Returns the frame ONLY if it is newer than last_frame_id, along with current frame_id."""
+        with self.lock:
+            if self.raw_frame is None or self.frame_id == last_frame_id:
+                return None, self.frame_id
+            return self.raw_frame.copy(), self.frame_id
 
     def set_camera_param(self, prop: str, value: float) -> bool:
         with self.lock:

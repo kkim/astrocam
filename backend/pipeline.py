@@ -133,15 +133,22 @@ class AstroPipeline:
     def _processing_loop(self):
         """
         Main worker loop running in a background thread. Continuous loops to acquire 
-        raw frames from the rig and feed them into the processing pipeline.
+        fresh raw frames from the rig and feed them into the processing pipeline.
         """
+        last_frame_id = -1
         while self.is_running:
-            frame = self.rig.get_raw_frame()
-            if frame is not None:
-                self._process_frame(frame)
-                time.sleep(0.01) # ~100 Hz polling maximum
+            if hasattr(self.rig, "get_fresh_frame"):
+                frame, frame_id = self.rig.get_fresh_frame(last_frame_id)
             else:
-                time.sleep(0.04) # ~25 Hz sleep if no frame
+                frame = self.rig.get_raw_frame()
+                frame_id = last_frame_id + 1
+
+            if frame is not None and frame_id != last_frame_id:
+                last_frame_id = frame_id
+                self._process_frame(frame)
+                time.sleep(0.005) # Brief yield after processing
+            else:
+                time.sleep(0.01) # Waiting for fresh exposure from sensor
 
     def _process_frame(self, frame):
         """

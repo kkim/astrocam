@@ -2,7 +2,7 @@ import cv2
 import threading
 import time
 import numpy as np
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from logger import event_logger
 from camera_discovery import find_camera_device
 
@@ -18,6 +18,7 @@ class RealCamera:
         self.width, self.height = 1920, 1080
         self.format = 'MJPG'
         self.raw_frame: Optional[np.ndarray] = None
+        self.frame_id: int = 0
         self.lock = threading.Lock()
         self.is_running = True
         self._last_error_log_time = 0
@@ -65,7 +66,6 @@ class RealCamera:
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.format))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         # Re-apply stored parameters
@@ -116,6 +116,7 @@ class RealCamera:
                     consecutive_failures = 0
                     with self.lock:
                         self.raw_frame = frame
+                        self.frame_id += 1
                 else:
                     consecutive_failures += 1
             else:
@@ -143,6 +144,13 @@ class RealCamera:
                 return None
             return self.raw_frame.copy()
 
+    def get_fresh_frame(self, last_frame_id: int = -1) -> Tuple[Optional[np.ndarray], int]:
+        """Returns the frame ONLY if it is newer than last_frame_id, along with current frame_id."""
+        with self.lock:
+            if self.raw_frame is None or self.frame_id == last_frame_id:
+                return None, self.frame_id
+            return self.raw_frame.copy(), self.frame_id
+
     def set_camera_param(self, prop: str, value: float) -> bool:
         mapping = {
             "brightness": cv2.CAP_PROP_BRIGHTNESS,
@@ -163,10 +171,6 @@ class RealCamera:
                         if prop == "exposure":
                             self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
                             self.params["auto_exposure"] = 0
-                            # Adjust stream FPS to allow long exposure (1 unit = 100µs = 0.0001s)
-                            exp_sec = max(val * 0.0001, 0.001)
-                            max_fps = max(1.0, min(30.0, 1.0 / exp_sec))
-                            self.cap.set(cv2.CAP_PROP_FPS, max_fps)
 
                         self.cap.set(mapping[prop], val)
                     except Exception:
