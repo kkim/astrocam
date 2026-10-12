@@ -159,6 +159,15 @@ class RealCamera:
                 if self.cap and self.cap.isOpened():
                     val = (3 if value > 0 else 1) if prop == "auto_exposure" else value
                     try:
+                        # If setting manual exposure, ensure auto_exposure is turned off first
+                        if prop == "exposure":
+                            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+                            self.params["auto_exposure"] = 0
+                            # Adjust stream FPS to allow long exposure (1 unit = 100µs = 0.0001s)
+                            exp_sec = max(val * 0.0001, 0.001)
+                            max_fps = max(1.0, min(30.0, 1.0 / exp_sec))
+                            self.cap.set(cv2.CAP_PROP_FPS, max_fps)
+
                         self.cap.set(mapping[prop], val)
                     except Exception:
                         pass

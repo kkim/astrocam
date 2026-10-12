@@ -691,18 +691,52 @@ function App() {
 
           <div className="control-section">
             <div className="section-header"><RefreshCw size={16} /> Camera Settings</div>
-            {Object.entries(controls || {}).map(([key, value]) => (
-              <div key={key} className="control-group">
-                <label>{key}: {value}</label>
-                <input 
-                  type="range" 
-                  min={key === 'average' ? 1 : 0} 
-                  max={key === 'exposure' ? 1000 : 255} 
-                  value={value || 0} 
-                  onChange={e => updateControl(key, parseInt(e.target.value))} 
-                />
-              </div>
-            ))}
+            {Object.entries(controls || {}).map(([key, value]) => {
+              let minVal = 0;
+              let maxVal = 255;
+              let stepVal = 1;
+              let labelText = `${key}: ${value ?? 0}`;
+
+              if (key === 'average') {
+                minVal = 1;
+                maxVal = 30;
+                labelText = `Average Stacking: ${value} frames`;
+              } else if (key === 'exposure') {
+                minVal = 1;
+                maxVal = 10000; // Up to 1.0s (10000 x 100µs)
+                stepVal = 10;
+                const ms = (value || 0) * 0.1;
+                const timeStr = ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms.toFixed(1)}ms`;
+                labelText = `Exposure: ${value} (~${timeStr})`;
+              } else if (key === 'brightness') {
+                minVal = 0;
+                maxVal = 255;
+                const note = value === 128 ? ' (Neutral)' : (value || 0) < 128 ? ' (Dark offset)' : ' (Bright offset)';
+                labelText = `Brightness: ${value}${note}`;
+              } else if (key === 'gain') {
+                minVal = 0;
+                maxVal = 255;
+                labelText = `Gain: ${value}`;
+              } else if (key === 'auto_exposure') {
+                minVal = 0;
+                maxVal = 1;
+                labelText = `Auto Exposure: ${value ? 'Auto (1)' : 'Manual (0)'}`;
+              }
+
+              return (
+                <div key={key} className="control-group">
+                  <label>{labelText}</label>
+                  <input 
+                    type="range" 
+                    min={minVal} 
+                    max={maxVal} 
+                    step={stepVal}
+                    value={value ?? 0} 
+                    onChange={e => updateControl(key, parseInt(e.target.value))} 
+                  />
+                </div>
+              );
+            })}
           </div>
 
         </div>
