@@ -96,11 +96,14 @@ body, html, #root {
 /* Stream Styles */
 .stream-container {
   position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  flex-shrink: 0;
+  box-sizing: border-box;
   background: black;
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid var(--border-color);
-  aspect-ratio: 8/9;
   margin-bottom: 24px;
 }
 
@@ -108,6 +111,7 @@ body, html, #root {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  display: block;
 }
 
 .stream-overlay {
