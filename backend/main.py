@@ -311,7 +311,7 @@ async def stream():
                 if frame:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-                await asyncio.sleep(0.04) # ~25fps
+                await asyncio.sleep(0.03) # ~33fps
             except Exception as e:
                 print(f"Stream error: {e}")
                 break

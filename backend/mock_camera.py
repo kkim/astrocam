@@ -47,29 +47,34 @@ class MockCamera:
             self.sim_drift_speed = 60.0
         self.sim_drift_angle = self.camera_angle
 
-        self.static_starfield = self._generate_static_starfield()
+        self.radius = 5
+        self.noise_canvas = np.clip(
+            24.0 + np.random.normal(0.0, 2.5, (self.height + 64, self.width + 64, 3)),
+            0.0, 255.0
+        ).astype(np.uint8)
+        self.star_patches = self._setup_star_patches()
         self.raw_frame: Optional[np.ndarray] = None
 
         self.thread = threading.Thread(target=self._sim_loop, daemon=True)
         self.thread.start()
 
-    def _create_star_profile(self, radius: int = 5, peak: float = 220.0, sigma: float = 2.0) -> np.ndarray:
+    def _create_star_patch(self, radius: int = 5, peak: float = 220.0, sigma: float = 2.0) -> np.ndarray:
         """Creates a smooth astronomical point spread function (PSF) of given radius."""
         y, x = np.ogrid[-radius:radius+1, -radius:radius+1]
         dist_sq = x*x + y*y
         mask = dist_sq <= radius*radius
-        profile = np.exp(-dist_sq / (2.0 * sigma**2)) * mask
-        return (profile * peak).astype(np.float32)
+        prof = np.exp(-dist_sq / (2.0 * sigma**2)) * mask * peak
+        patch = np.repeat(prof[:, :, None], 3, axis=2)
+        return patch.astype(np.float32)
 
-    def _generate_static_starfield(self) -> np.ndarray:
+    def _setup_star_patches(self) -> list:
         """
-        Generates realistic starfield matching SV205 telescopic observations:
+        Precomputes realistic star profiles matching SV205 telescopic observations:
         - One bright guide star (radius 5, peak ~220)
         - 1-2 dim stars of brightness ~10 (radius 5)
         - 3-5 very dim stars of brightness ~1-3 (radius 5)
         """
-        canvas = np.zeros((self.full_height, self.full_width, 3), dtype=np.float32)
-        radius = 5
+        radius = self.radius
 
         # Guide star positioned near center of drift track
         bright_star = (int(self.full_width * 0.45), int(self.full_height * 0.45), 220.0)
@@ -89,19 +94,7 @@ class MockCamera:
         ]
 
         all_stars = [bright_star] + dim_stars + very_dim_stars
-        for sx, sy, peak in all_stars:
-            prof = self._create_star_profile(radius=radius, peak=peak)
-            y1 = max(0, sy - radius)
-            y2 = min(self.full_height, sy + radius + 1)
-            x1 = max(0, sx - radius)
-            x2 = min(self.full_width, sx + radius + 1)
-            py1 = y1 - (sy - radius)
-            py2 = py1 + (y2 - y1)
-            px1 = x1 - (sx - radius)
-            px2 = px1 + (x2 - x1)
-            canvas[y1:y2, x1:x2, :] += prof[py1:py2, px1:px2, None]
-
-        return canvas
+        return [(sx, sy, self._create_star_patch(radius=radius, peak=peak)) for sx, sy, peak in all_stars]
 
     def _get_current_duty(self) -> float:
         if self.get_duty_callback:
@@ -112,7 +105,11 @@ class MockCamera:
         return 80.0
 
     def _sim_loop(self):
+        target_fps = 36.0
+        target_dt = 1.0 / target_fps  # Target period yielding ~33 FPS with system scheduling
+
         while self.is_running:
+            t_start = time.perf_counter()
             now = time.time()
             dt = now - self.last_update_time
 
@@ -139,52 +136,61 @@ class MockCamera:
                 self.raw_frame = frame
                 self.frame_id += 1
 
-            # Realistic camera exposure integration time
+            # Realistic camera exposure integration time:
+            # At standard short exposure (156 = ~15.6ms), frame rate runs at full 33 FPS.
+            # When exposure exceeds 30.3ms (e.g. 500ms), frame rate naturally slows down.
             exp_sec = float(self.params.get("exposure", 156)) * 0.0001
-            time.sleep(max(exp_sec, 0.033))
+            target_interval = max(target_dt, exp_sec)
+
+            elapsed = time.perf_counter() - t_start
+            sleep_time = max(0.001, target_interval - elapsed)
+            time.sleep(sleep_time)
 
     def _generate_mock_frame(self, duty: float) -> np.ndarray:
-        cx = int(self.pos_x)
-        cy = int(self.pos_y)
-        crop = self.static_starfield[cy : cy + self.height, cx : cx + self.width].copy()
+        # Dynamic slice from precomputed noise canvas to simulate sensor read noise
+        oy = (self.frame_id * 17) % 64
+        ox = (self.frame_id * 29) % 64
+        frame = self.noise_canvas[oy : oy + self.height, ox : ox + self.width].copy()
 
         # 1. Exposure and Gain controls
         exp_val = float(self.params.get("exposure", 156))
         gain_val = float(self.params.get("gain", 0))
 
-        # Base exposure 156 (~15.6ms) is unity flux
         exp_factor = max(exp_val / 156.0, 0.01)
-        # Gain: 0 is unity 1x, 255 is ~5x analog/digital amplification
         gain_factor = 1.0 + (gain_val / 64.0)
         flux_factor = exp_factor * gain_factor
 
-        star_signal = crop * flux_factor
+        cx = int(self.pos_x)
+        cy = int(self.pos_y)
+        r = self.radius
 
-        # 2. Brightness (black level offset):
-        # 128 is neutral black level (~24 counts background).
-        # Setting < 128 pulls black level down (clips blacks/faint stars to 0).
-        # Setting > 128 lifts black level.
+        for sx, sy, patch in self.star_patches:
+            fx = sx - cx
+            fy = sy - cy
+            if (fx - r) >= 0 and (fx + r + 1) <= self.width and (fy - r) >= 0 and (fy + r + 1) <= self.height:
+                scaled = np.clip(patch * flux_factor, 0.0, 255.0).astype(np.uint8)
+                frame[fy - r : fy + r + 1, fx - r : fx + r + 1] = cv2.add(
+                    frame[fy - r : fy + r + 1, fx - r : fx + r + 1], scaled
+                )
+
+        # 2. Brightness (black level offset)
         brightness_val = float(self.params.get("brightness", 128))
-        base_bg = 24.0
-        bg_level = base_bg + (brightness_val - 128.0) * 0.8
+        if brightness_val != 128:
+            diff = int((brightness_val - 128.0) * 0.8)
+            if diff > 0:
+                frame = cv2.add(frame, diff)
+            elif diff < 0:
+                frame = cv2.subtract(frame, -diff)
 
-        # 3. Gaussian sensor noise:
-        # Standard deviation ~2.5 counts, amplified by sensor gain
-        noise_std = 2.5 * np.sqrt(gain_factor)
-        noise = np.random.normal(0.0, noise_std, (self.height, self.width, 3)).astype(np.float32)
-
-        # 4. Synthesize raw sensor frame
-        img = bg_level + star_signal + noise
-
-        # 5. Contrast (S-Curve):
-        # 32 is neutral linear. > 32 stretches midtones, crushing shadows and blowing highlights.
+        # 3. Contrast (S-Curve)
         contrast_val = float(self.params.get("contrast", 32))
         if contrast_val != 32:
             slope = contrast_val / 32.0
-            img = 128.0 + (img - 128.0) * slope
+            x = np.arange(256, dtype=np.float32)
+            lut = np.clip(128.0 + (x - 128.0) * slope, 0.0, 255.0).astype(np.uint8)
+            frame = cv2.LUT(frame, lut)
 
-        # 6. Sharpness (Edge Enhancement):
-        # 0 is off (recommended). > 0 applies an unsharp edge kernel, creating dark halos and ringing.
+        # 4. Sharpness (Edge Enhancement)
         sharpness_val = float(self.params.get("sharpness", 0))
         if sharpness_val > 0:
             k = sharpness_val * 0.35
@@ -193,22 +199,19 @@ class MockCamera:
                 [-k,   1.0 + 4 * k, -k],
                 [0,    -k,          0]
             ], dtype=np.float32)
-            img = cv2.filter2D(img, -1, kernel)
+            frame = cv2.filter2D(frame, -1, kernel)
 
-        # 7. Saturation (Chroma):
-        # 64 is neutral color. 0 is monochrome.
+        # 5. Saturation (Chroma)
         saturation_val = float(self.params.get("saturation", 64))
         if saturation_val == 0:
-            gray = 0.299 * img[:, :, 2] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 0]
-            img[:, :, 0] = gray
-            img[:, :, 1] = gray
-            img[:, :, 2] = gray
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         elif saturation_val != 64:
             sat_scale = max(saturation_val / 64.0, 0.0)
-            gray = (0.299 * img[:, :, 2] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 0])[:, :, None]
-            img = gray + (img - gray) * sat_scale
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[:, :, None].astype(np.float32)
+            f_flt = frame.astype(np.float32)
+            frame = np.clip(gray + (f_flt - gray) * sat_scale, 0.0, 255.0).astype(np.uint8)
 
-        frame = np.clip(img, 0.0, 255.0).astype(np.uint8)
         return frame
 
     def reconnect(self) -> bool:

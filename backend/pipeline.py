@@ -146,9 +146,8 @@ class AstroPipeline:
             if frame is not None and frame_id != last_frame_id:
                 last_frame_id = frame_id
                 self._process_frame(frame)
-                time.sleep(0.005) # Brief yield after processing
             else:
-                time.sleep(0.01) # Waiting for fresh exposure from sensor
+                time.sleep(0.002) # Waiting for fresh exposure from sensor
 
     def _process_frame(self, frame):
         """
@@ -183,9 +182,9 @@ class AstroPipeline:
                 self._frame_count = 0
                 self._last_fps_calc_time = now
                 
-            # Mean Brightness calculation
+            # Mean Brightness calculation (fast strided sample)
             if self.latest_frame is not None:
-                self.mean_brightness = float(np.mean(self.latest_frame))
+                self.mean_brightness = float(np.mean(self.latest_frame[::8, ::8]))
         
         # Run drift measurement and auto-tracking control step
         if self.latest_frame is not None:
