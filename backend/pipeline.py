@@ -377,7 +377,8 @@ class AstroPipeline:
 
             if self.auto_tracking and self.pending_relock:
                 # Try to align to keep the history if possible
-                T = align_images(self.ref_frame, frame, translation_only=True)
+                search_center = self.reference_stars[0] if self.reference_stars else None
+                T = align_images(self.ref_frame, frame, translation_only=True, search_center=search_center)
                 dx = float(T[0, 2])
                 dy = float(T[1, 2])
                 if abs(dx) > 1e-5 or abs(dy) > 1e-5:
@@ -407,7 +408,8 @@ class AstroPipeline:
 
         # Sub-pixel translation alignment (runs outside lock to keep UI responsive)
         if self.auto_tracking:
-            T, metrics = align_images(self.ref_frame, frame, translation_only=True, return_metrics=True)
+            search_center = self.reference_stars[0] if self.reference_stars else None
+            T, metrics = align_images(self.ref_frame, frame, translation_only=True, return_metrics=True, search_center=search_center)
         else:
             T, metrics = align_images(self.prev_alignment_frame, frame, translation_only=True, return_metrics=True)
             

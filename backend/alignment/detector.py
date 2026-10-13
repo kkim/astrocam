@@ -9,16 +9,23 @@ def find_bright_star_centroid(
     min_snr: float = 3.0,
     min_peak_above_bg: float = 6.0,
     patch_radius: int = 15,
+    search_center: Optional[Tuple[float, float]] = None,
+    search_radius: Optional[int] = None,
 ) -> Optional[Tuple[float, float, float, float]]:
     """
-    Locates the brightest star in the image using blurred peak detection and 
-    sub-pixel center-of-mass centroiding.
+    Locates the target star using blurred peak detection and sub-pixel center-of-mass centroiding.
+    
+    If search_center=(x, y) is specified, restricts the search to a local search window (lock box)
+    and selects the candidate closest to the expected position, preventing confusion if another
+    star of similar brightness is in the field of view.
     
     Args:
         img: Input image (BGR or grayscale, uint8/uint16/float).
         min_snr: Minimum peak-to-noise ratio to accept as a valid star.
         min_peak_above_bg: Minimum intensity increment above background.
         patch_radius: Radius around peak pixel for center-of-mass calculation.
+        search_center: Optional (x, y) coordinates of expected star location.
+        search_radius: Radius in pixels around search_center to search (default 80).
         
     Returns:
         (cx, cy, peak_val, bg_val) if a distinct star peak is detected, else None.
@@ -40,7 +47,46 @@ def find_bright_star_centroid(
 
     # Gaussian blur (7x7, sigma=1.5) filters single-pixel sensor noise and hot pixels
     blurred = cv2.GaussianBlur(gray_f, (7, 7), 1.5)
-    _, max_val, _, max_loc = cv2.minMaxLoc(blurred)
+    h, w = gray.shape[:2]
+
+    if search_center is not None:
+        cx_exp, cy_exp = search_center
+        sr = search_radius if search_radius is not None else 80
+        x1 = max(0, int(cx_exp - sr))
+        x2 = min(w, int(cx_exp + sr + 1))
+        y1 = max(0, int(cy_exp - sr))
+        y2 = min(h, int(cy_exp + sr + 1))
+
+        roi = blurred[y1:y2, x1:x2]
+        if roi.size == 0:
+            return None
+
+        # Detect local peaks inside search ROI
+        dilated = cv2.dilate(roi, None)
+        local_max = (roi == dilated) & (roi > bg_val + min_peak_above_bg)
+        py, px = np.where(local_max)
+
+        if len(py) > 0:
+            # If multiple peaks exist in ROI, select the peak closest to expected search_center
+            best_dist = float("inf")
+            best_x0, best_y0 = None, None
+            for r_y, r_x in zip(py, px):
+                abs_x = x1 + r_x
+                abs_y = y1 + r_y
+                dist = (abs_x - cx_exp) ** 2 + (abs_y - cy_exp) ** 2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_x0, best_y0 = abs_x, abs_y
+            x0, y0 = best_x0, best_y0
+            max_val = float(blurred[y0, x0])
+        else:
+            _, roi_max, _, roi_loc = cv2.minMaxLoc(roi)
+            x0 = x1 + roi_loc[0]
+            y0 = y1 + roi_loc[1]
+            max_val = float(roi_max)
+    else:
+        _, max_val, _, max_loc = cv2.minMaxLoc(blurred)
+        x0, y0 = max_loc
 
     peak_delta = max_val - bg_val
     peak_snr = peak_delta / max(std_val, 1e-4)
@@ -48,7 +94,6 @@ def find_bright_star_centroid(
     if peak_snr < min_snr or peak_delta < min_peak_above_bg:
         return None
 
-    x0, y0 = max_loc
     h, w = gray.shape[:2]
     x_min = max(0, x0 - patch_radius)
     x_max = min(w, x0 + patch_radius + 1)

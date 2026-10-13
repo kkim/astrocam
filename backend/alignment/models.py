@@ -21,6 +21,7 @@ class AlignmentConfig:
     max_candidates: int = 300
     centroid_window: int = 15
     patch_radius: int = 15
+    search_radius: int = 80
     min_snr: float = 3.0
     min_peak_above_bg: float = 6.0
     n_neighbors: int = 3
