@@ -209,6 +209,27 @@ class StreamRecorder:
         self.acc_buffer = None
         self.acc_count = 0
 
+    def add_completed_stack(self, stack_img: np.ndarray, count: int, timestamp: Optional[float] = None) -> None:
+        """
+        Directly queues an externally computed accumulated stack image for disk saving.
+        """
+        if not self.is_recording:
+            return
+
+        capture_time = timestamp if timestamp is not None else time.time()
+        with self.lock:
+            self.total_raw_frames += count
+            self.last_acc_count = count
+            dt = datetime.fromtimestamp(capture_time)
+            timestamp_str = dt.strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"{timestamp_str}_acc{count}.{self.file_format}"
+            try:
+                self.frame_queue.put_nowait((stack_img.copy(), filename))
+            except queue.Full:
+                self.dropped_frames += 1
+                if self.dropped_frames % 30 == 1:
+                    event_logger.log(f"Recording warning: write queue full, dropped {self.dropped_frames} frames.")
+
     def _writer_loop(self):
         """Background disk writer thread."""
         while self.is_recording or not self.frame_queue.empty():

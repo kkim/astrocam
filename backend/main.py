@@ -348,6 +348,8 @@ def get_status():
     status = rig.get_camera_status()
     status["fps"] = pipeline.fps
     status["mean_brightness"] = pipeline.mean_brightness
+    status["accumulation_count"] = pipeline.accumulation_count
+    status["acc_count"] = pipeline.acc_count
     motor_status = rig.get_motor_status()
     status["mock_mode"] = motor_status.get("mock_mode", True)
     status["camera_mode"] = camera_mode
@@ -358,18 +360,28 @@ def get_status():
 @app.get("/controls")
 def get_controls():
     if not rig or not pipeline: return {}
-    return {**rig.get_camera_params(), "average": pipeline.n_avg}
+    return {**rig.get_camera_params(), "average": pipeline.accumulation_count, "accumulation_count": pipeline.accumulation_count}
 
 @app.post("/controls")
 def set_control(update: ControlUpdate):
     if not rig or not pipeline: return {"success": False}
-    if update.property == "average":
-        success = pipeline.set_n_avg(update.value)
+    if update.property in ("average", "accumulation_count"):
+        success = pipeline.set_accumulation_count(int(update.value))
     else:
         success = rig.set_camera_param(update.property, update.value)
+        pipeline.reset_accumulation()
     if success:
         event_logger.log(f"Control: {update.property} -> {update.value}")
     return {"success": success, "property": update.property, "value": update.value}
+
+class AccumulationUpdate(BaseModel):
+    count: int
+
+@app.post("/pipeline/accumulation")
+def set_pipeline_accumulation(req: AccumulationUpdate):
+    if not pipeline: return {"success": False}
+    success = pipeline.set_accumulation_count(req.count)
+    return {"success": success, "accumulation_count": pipeline.accumulation_count}
 
 class RecordingStartRequest(BaseModel):
     accumulation_count: Optional[int] = None

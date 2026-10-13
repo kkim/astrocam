@@ -22,8 +22,7 @@ const CAMERA_SETTING_KEYS: (keyof Controls)[] = [
   'contrast',
   'saturation',
   'sharpness',
-  'auto_exposure',
-  'average'
+  'auto_exposure'
 ];
 
 interface Controls {
@@ -33,7 +32,8 @@ interface Controls {
   gain: number;
   exposure: number;
   sharpness: number;
-  average: number;
+  average?: number;
+  accumulation_count?: number;
   auto_exposure: number;
 }
 
@@ -169,15 +169,37 @@ function App() {
     sim_drift_angle: null,
     sim_camera_angle: null
   });
-  const [health, setHealth] = useState({
+  const [health, setHealth] = useState<{
+    connected: boolean;
+    mean_brightness: number;
+    width: number;
+    height: number;
+    fps: number;
+    accumulation_count?: number;
+    acc_count?: number;
+    camera_mode?: string;
+    mount_mode?: string;
+    recording?: RecordingStatus;
+  }>({
     connected: true,
     mean_brightness: 0,
     width: 1920,
     height: 1080,
-    fps: 0
+    fps: 0,
+    accumulation_count: 1,
+    acc_count: 1
   });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const logWindowRef = useRef<HTMLDivElement>(null);
+
+  const handleSetAccumulationCount = (count: number) => {
+    setAccumulationCount(count);
+    fetch(`${API_BASE}/pipeline/accumulation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count })
+    }).catch(e => console.error("Error setting accumulation:", e));
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -556,6 +578,13 @@ function App() {
           <img src={`${API_BASE}/stream`} alt="Live Stream" className="video-preview" />
           <div className="stream-overlay">
             <span>{health.width || 0}x{health.height || 0} @ {(health.fps || 0).toFixed(1)} FPS</span>
+            {accumulationCount > 1 ? (
+              <span style={{ color: '#58a6ff', fontWeight: 600 }}>
+                Stack: {health.acc_count ?? 1}/{accumulationCount} ({accumulationCount}x)
+              </span>
+            ) : (
+              <span>Stack: 1x (Raw)</span>
+            )}
             <span>Luminance: {(health.mean_brightness || 0).toFixed(1)}</span>
           </div>
         </div>
@@ -753,39 +782,39 @@ function App() {
           </div>
 
           <div className="control-section">
-            <div className="section-header"><Zap size={16} /> Stream Recording</div>
+            <div className="section-header"><Zap size={16} /> Live Stacking & Recording</div>
             <div className="control-group">
-              <label>Burst Stacking Window</label>
+              <label>Stacking Window (Canvas & Recording)</label>
               <div className="preset-row">
                 <button 
                   className={accumulationCount === 1 ? 'active' : ''} 
-                  onClick={() => setAccumulationCount(1)}
+                  onClick={() => handleSetAccumulationCount(1)}
                   disabled={recordingStatus.is_recording}
-                  title="Raw (1x): Save every individual sub-exposure directly"
+                  title="Raw (1x): Live view & recording of each raw sub-exposure directly"
                 >
                   1x (Raw)
                 </button>
                 <button 
                   className={accumulationCount === 10 ? 'active' : ''} 
-                  onClick={() => setAccumulationCount(10)}
+                  onClick={() => handleSetAccumulationCount(10)}
                   disabled={recordingStatus.is_recording}
-                  title="10x burst stack (3.2x SNR, ~1.6 bits extra dynamic range)"
+                  title="10x stack (3.2x SNR, ~1.6 bits extra dynamic range)"
                 >
                   10x
                 </button>
                 <button 
                   className={accumulationCount === 25 ? 'active' : ''} 
-                  onClick={() => setAccumulationCount(25)}
+                  onClick={() => handleSetAccumulationCount(25)}
                   disabled={recordingStatus.is_recording}
-                  title="25x burst stack (5.0x SNR, ~2.3 bits extra dynamic range)"
+                  title="25x stack (5.0x SNR, ~2.3 bits extra dynamic range)"
                 >
                   25x
                 </button>
                 <button 
                   className={accumulationCount === 100 ? 'active' : ''} 
-                  onClick={() => setAccumulationCount(100)}
+                  onClick={() => handleSetAccumulationCount(100)}
                   disabled={recordingStatus.is_recording}
-                  title="100x deep burst stack (10.0x SNR, ~3.3 bits extra dynamic range)"
+                  title="100x deep stack (10.0x SNR, ~3.3 bits extra dynamic range)"
                 >
                   100x
                 </button>
@@ -824,11 +853,7 @@ function App() {
               let stepVal = 1;
               let labelText = `${key}: ${value ?? 0}`;
 
-              if (key === 'average') {
-                minVal = 1;
-                maxVal = 30;
-                labelText = `Average Stacking: ${value} frames`;
-              } else if (key === 'exposure') {
+              if (key === 'exposure') {
                 minVal = 1;
                 maxVal = 10000; // Up to 1.0s (10000 x 100µs)
                 stepVal = 10;

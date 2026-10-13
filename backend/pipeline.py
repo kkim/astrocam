@@ -82,8 +82,9 @@ class AstroPipeline:
         self.rig = rig
         
         # Pipeline processing state
-        self.n_avg = 1
-        self.acc_frame = None
+        self.accumulation_count = 1
+        self.acc_buffer: Optional[np.ndarray] = None
+        self.acc_count = 0
         self.latest_frame = None
         self.lock = threading.Lock()
         self.is_running = True
@@ -151,29 +152,50 @@ class AstroPipeline:
 
     def _process_frame(self, frame):
         """
-        Applies Tier 1 weighted average stacking to the raw frame to reduce noise, 
-        calculates performance telemetry (FPS, brightness), and triggers the 
-        closed-loop tracking logic if auto-tracking is enabled.
+        Applies block sum accumulation to raw frames, scales the current accumulation
+        divided by current frame count into latest_frame for the live view canvas,
+        calculates telemetry (FPS, brightness), and forwards completed stacks
+        to the recorder when recording is active.
         
         Args:
             frame: Raw BGR/grayscale numpy array acquired from the camera rig.
         """
-        # Submit raw frame to stream recorder if active
-        self.recorder.add_frame(frame)
+        completed_stack = None
+        completed_count = 0
 
         with self.lock:
-            # Tier 1 Stacking (Weighted averaging)
-            if self.n_avg <= 1:
+            # Continuous Live Block Accumulation (1x = raw, 10x, 25x, 100x)
+            if self.accumulation_count <= 1:
                 self.latest_frame = frame
-                self.acc_frame = None
+                self.acc_buffer = None
+                self.acc_count = 1
             else:
-                alpha = 1.0 / self.n_avg
-                if self.acc_frame is None or self.acc_frame.shape != frame.shape:
-                    self.acc_frame = frame.astype('float32')
+                if self.acc_buffer is None or self.acc_buffer.shape != frame.shape:
+                    self.acc_buffer = frame.astype(np.float32)
+                    self.acc_count = 1
                 else:
-                    cv2.accumulateWeighted(frame, self.acc_frame, alpha)
-                self.latest_frame = cv2.convertScaleAbs(self.acc_frame)
-            
+                    self.acc_buffer += frame.astype(np.float32)
+                    self.acc_count += 1
+
+                # Draw current accumulation divided by current count into the view canvas
+                # Saturated float32 -> uint8 scaled by 1.0 / acc_count via single SIMD instruction
+                self.latest_frame = cv2.convertScaleAbs(self.acc_buffer, alpha=1.0 / self.acc_count)
+
+                # Check if block reached target accumulation
+                if self.acc_count >= self.accumulation_count:
+                    completed_count = self.acc_count
+                    avg_float = self.acc_buffer / self.acc_count
+                    if self.recorder.file_format in ("tif", "tiff"):
+                        if np.max(avg_float) <= 255.0:
+                            completed_stack = np.clip(avg_float * 257.0, 0, 65535).astype(np.uint16)
+                        else:
+                            completed_stack = np.clip(avg_float, 0, 65535).astype(np.uint16)
+                    else:
+                        completed_stack = self.latest_frame.copy()
+
+                    self.acc_buffer = None
+                    self.acc_count = 0
+
             # FPS Calculation
             self._frame_count += 1
             now = time.time()
@@ -185,7 +207,14 @@ class AstroPipeline:
             # Mean Brightness calculation (fast strided sample)
             if self.latest_frame is not None:
                 self.mean_brightness = float(np.mean(self.latest_frame[::8, ::8]))
-        
+
+        # Handle Stream Recording
+        if self.recorder.is_recording:
+            if self.accumulation_count <= 1:
+                self.recorder.add_frame(frame)
+            elif completed_stack is not None:
+                self.recorder.add_completed_stack(completed_stack, completed_count)
+
         # Run drift measurement and auto-tracking control step
         if self.latest_frame is not None:
             self._update_tracking(self.latest_frame)
@@ -219,20 +248,34 @@ class AstroPipeline:
             ret, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
             return jpeg.tobytes() if ret else None
 
-    def set_n_avg(self, n):
+    def set_accumulation_count(self, count: int) -> bool:
         """
-        Updates the running average frame count. Changing this value resets the 
-        accumulator to prevent ghosting artifacts when settings are changed.
-        
-        Args:
-            n: Integer number of frames to average.
+        Updates the stacking accumulation count (1x, 10x, 25x, 100x).
+        Resets active accumulator to prevent ghosting artifacts.
         """
         with self.lock:
-            new_n = int(n)
-            if new_n != self.n_avg:
-                self.n_avg = new_n
-                self.acc_frame = None
+            new_count = max(1, int(count))
+            if new_count != self.accumulation_count:
+                self.accumulation_count = new_count
+                self.acc_buffer = None
+                self.acc_count = 0
+                event_logger.log(f"Stacking accumulation window set to {new_count}x")
         return True
+
+    def reset_accumulation(self):
+        """Resets the live accumulator buffer (e.g. on camera parameter change)."""
+        with self.lock:
+            self.acc_buffer = None
+            self.acc_count = 0
+
+    def set_n_avg(self, n):
+        """Backwards compatibility for legacy average calls."""
+        return self.set_accumulation_count(n)
+
+    @property
+    def n_avg(self) -> int:
+        """Backwards compatibility for legacy average callers."""
+        return self.accumulation_count
 
     def set_auto_tracking(self, enable: bool):
         """
@@ -591,14 +634,31 @@ class AstroPipeline:
 
     def start_recording(self, accumulation_count=None, accumulation_ms=None, file_format=None):
         """Starts continuous stream recording to a timestamped folder."""
+        count = accumulation_count or accumulation_ms or self.accumulation_count
+        with self.lock:
+            self.accumulation_count = max(1, int(count))
+            self.acc_buffer = None
+            self.acc_count = 0
         return self.recorder.start_recording(
-            accumulation_count=accumulation_count,
-            accumulation_ms=accumulation_ms,
+            accumulation_count=self.accumulation_count,
             file_format=file_format
         )
 
     def stop_recording(self):
         """Stops active stream recording and flushes pending frames."""
+        with self.lock:
+            if self.recorder.is_recording and self.accumulation_count > 1 and self.acc_buffer is not None and self.acc_count > 0:
+                avg_float = self.acc_buffer / self.acc_count
+                if self.recorder.file_format in ("tif", "tiff"):
+                    if np.max(avg_float) <= 255.0:
+                        stack_img = np.clip(avg_float * 257.0, 0, 65535).astype(np.uint16)
+                    else:
+                        stack_img = np.clip(avg_float, 0, 65535).astype(np.uint16)
+                else:
+                    stack_img = self.latest_frame.copy()
+                self.recorder.add_completed_stack(stack_img, self.acc_count)
+                self.acc_buffer = None
+                self.acc_count = 0
         return self.recorder.stop_recording()
 
     def get_recording_status(self):
