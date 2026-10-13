@@ -662,7 +662,7 @@ function App() {
             </div>
           </div>
 
-          {cameraEngine === 'mock' && (
+          {cameraEngine === 'mock' && mountEngine === 'mock' && (
             <div className="control-section" style={{ marginTop: '-12px' }}>
               <div className="tracking-telemetry" style={{ marginTop: '0px', background: 'rgba(88, 166, 255, 0.05)', borderColor: 'rgba(88, 166, 255, 0.15)' }}>
                 {trackingStatus.sim_drift_speed != null && (
@@ -729,24 +729,26 @@ function App() {
                 </button>
               </div>
 
-              <div className="tracking-telemetry">
-                <div className="tracking-telemetry-row">
-                  <span>Drift Speed XY:</span>
-                  <span>{(trackingStatus.drift_speed_x ?? 0).toFixed(1)}, {(trackingStatus.drift_speed_y ?? 0).toFixed(1)}px/s</span>
+              {trackingStatus.active && (
+                <div className="tracking-telemetry">
+                  <div className="tracking-telemetry-row">
+                    <span>Drift Speed XY:</span>
+                    <span>{(trackingStatus.drift_speed_x ?? 0).toFixed(1)}, {(trackingStatus.drift_speed_y ?? 0).toFixed(1)}px/s</span>
+                  </div>
+                  <div className="tracking-telemetry-row">
+                    <span>Drift Speed:</span>
+                    <span>{(trackingStatus.drift_speed ?? 0).toFixed(3)} px/s</span>
+                  </div>
+                  <div className="tracking-telemetry-row">
+                    <span>Camera PA:</span>
+                    <span>{(trackingStatus.camera_pa ?? 0).toFixed(1)}°</span>
+                  </div>
+                  <div className="tracking-telemetry-row">
+                    <span>Match Quality:</span>
+                    <span>{((trackingStatus.inlier_ratio ?? 0) * 100).toFixed(0)}%</span>
+                  </div>
                 </div>
-                <div className="tracking-telemetry-row">
-                  <span>Drift Speed:</span>
-                  <span>{(trackingStatus.drift_speed ?? 0).toFixed(3)} px/s</span>
-                </div>
-                <div className="tracking-telemetry-row">
-                  <span>Camera PA:</span>
-                  <span>{(trackingStatus.camera_pa ?? 0).toFixed(1)}°</span>
-                </div>
-                <div className="tracking-telemetry-row">
-                  <span>Match Quality:</span>
-                  <span>{((trackingStatus.inlier_ratio ?? 0) * 100).toFixed(0)}%</span>
-                </div>
-              </div>
+              )}
             </div>
           </div>
 
