@@ -34,9 +34,8 @@ class StreamRecorder:
         self.start_time: float = 0.0
         self.stop_time: float = 0.0
 
-        # Accumulation settings
-        # 0 = raw (every frame), 200 = 5 FPS target, 1000 = 1 FPS target
-        self.accumulation_ms: int = 0
+        # Accumulation settings: frame count (1 = raw, 10 = 10x stack, 25 = 25x, 100 = 100x)
+        self.accumulation_count: int = 1
         self.file_format: str = "tif"   # "tif" or "jpg"
         self.acc_buffer: Optional[np.ndarray] = None
         self.acc_count: int = 0
@@ -48,7 +47,12 @@ class StreamRecorder:
         self.writer_thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
 
-    def start_recording(self, accumulation_ms: Optional[int] = None, file_format: Optional[str] = None) -> Dict[str, Any]:
+    def start_recording(
+        self,
+        accumulation_count: Optional[int] = None,
+        accumulation_ms: Optional[int] = None,
+        file_format: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Starts a new recording session, creating a timestamped folder inside captures/.
         """
@@ -61,8 +65,24 @@ class StreamRecorder:
                     "frames": self.frames_count
                 }
 
-            if accumulation_ms is not None:
-                self.accumulation_ms = int(accumulation_ms)
+            if accumulation_count is not None:
+                self.accumulation_count = max(1, int(accumulation_count))
+            elif accumulation_ms is not None:
+                # Backwards compatibility mapping:
+                ms = int(accumulation_ms)
+                if ms in (1, 10, 25, 100):
+                    self.accumulation_count = ms
+                elif ms <= 0:
+                    self.accumulation_count = 1
+                elif ms == 200:
+                    self.accumulation_count = 10
+                elif ms == 500:
+                    self.accumulation_count = 25
+                elif ms == 1000:
+                    self.accumulation_count = 100
+                else:
+                    self.accumulation_count = max(1, ms)
+
             if file_format is not None:
                 fmt = file_format.lower().replace(".", "")
                 self.file_format = fmt if fmt in ("tif", "tiff", "jpg", "jpeg") else "tif"
@@ -98,21 +118,22 @@ class StreamRecorder:
             self.writer_thread.start()
 
             ext_display = self.file_format.upper()
-            acc_display = f"{self.accumulation_ms}ms" if self.accumulation_ms > 0 else "RAW"
+            acc_display = f"{self.accumulation_count}x stack" if self.accumulation_count > 1 else "RAW (1x)"
             event_logger.log(f"Stream Recording started: saving {ext_display} to {self.session_name}/ (accumulation={acc_display})")
             return {
                 "success": True,
                 "is_recording": True,
                 "directory": self.session_name,
                 "session_path": self.session_path,
-                "accumulation_ms": self.accumulation_ms,
+                "accumulation_count": self.accumulation_count,
+                "accumulation_ms": self.accumulation_count,
                 "format": self.file_format
             }
 
     def add_frame(self, frame: np.ndarray, timestamp: Optional[float] = None) -> None:
         """
-        Submits a frame to the recorder. If accumulation_ms > 0, accumulates frames
-        in RAM until the time window has elapsed, then submits the integrated frame.
+        Submits a frame to the recorder. If accumulation_count > 1, accumulates frames
+        in RAM until N frames have been ingested, then submits the integrated 16-bit stack.
         Fast and non-blocking for the acquisition loop.
         """
         if not self.is_recording:
@@ -123,8 +144,8 @@ class StreamRecorder:
         with self.lock:
             self.total_raw_frames += 1
 
-            if self.accumulation_ms <= 0:
-                # Raw mode: write every frame immediately
+            if self.accumulation_count <= 1:
+                # Raw mode (1x): write every frame immediately
                 dt = datetime.fromtimestamp(capture_time)
                 timestamp_str = dt.strftime("%Y%m%d_%H%M%S_%f")
                 filename = f"{timestamp_str}.{self.file_format}"
@@ -138,7 +159,7 @@ class StreamRecorder:
                     if self.dropped_frames % 30 == 1:
                         event_logger.log(f"Recording warning: write queue full, dropped {self.dropped_frames} frames.")
             else:
-                # Accumulation mode: accumulate over time window in RAM
+                # Accumulation mode: accumulate exactly N frames in RAM
                 if self.acc_buffer is None:
                     self.acc_buffer = frame.astype(np.float32)
                     self.acc_count = 1
@@ -148,8 +169,7 @@ class StreamRecorder:
                     self.acc_buffer += frame.astype(np.float32)
                     self.acc_count += 1
 
-                elapsed_ms = (capture_time - self.acc_start_time) * 1000.0
-                if elapsed_ms >= self.accumulation_ms:
+                if self.acc_count >= self.accumulation_count:
                     self._flush_accumulated_frame_locked()
 
     def _flush_accumulated_frame_locked(self) -> None:
@@ -262,7 +282,7 @@ class StreamRecorder:
 
         mb = round(self.bytes_stored / (1024 * 1024), 2)
         duration = round(self.stop_time - self.start_time, 1)
-        acc_info = f" (avg ~{self.last_acc_count} frames/stack)" if self.accumulation_ms > 0 else ""
+        acc_info = f" ({self.last_acc_count}x stack)" if self.accumulation_count > 1 else ""
         event_logger.log(f"Stream Recording stopped: {self.frames_count} files saved{acc_info}, {mb} MB in {self.session_name}/")
 
         # Ensure a Full HD thumbnail exists in base_dir/thumbnails
@@ -291,7 +311,8 @@ class StreamRecorder:
             "frames": self.frames_count,
             "raw_frames": self.total_raw_frames,
             "accumulated_frames": self.last_acc_count,
-            "accumulation_ms": self.accumulation_ms,
+            "accumulation_count": self.accumulation_count,
+            "accumulation_ms": self.accumulation_count,
             "format": self.file_format,
             "bytes_stored": self.bytes_stored,
             "mb_stored": mb,
@@ -312,7 +333,8 @@ class StreamRecorder:
                 "frames": self.frames_count,
                 "raw_frames": self.total_raw_frames,
                 "accumulated_frames": self.last_acc_count,
-                "accumulation_ms": self.accumulation_ms,
+                "accumulation_count": self.accumulation_count,
+                "accumulation_ms": self.accumulation_count,
                 "format": self.file_format,
                 "bytes_stored": self.bytes_stored,
                 "mb_stored": mb,
