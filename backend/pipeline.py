@@ -204,9 +204,14 @@ class AstroPipeline:
                 self._frame_count = 0
                 self._last_fps_calc_time = now
                 
-            # Mean Brightness calculation (fast strided sample)
+            # Focus metric ("luminance" in the UI): peak of the 3x3 box-filtered
+            # grayscale frame. A focused star concentrates its light into few
+            # pixels, so the peak is maximized at best focus. The 3x3 average
+            # rejects single hot pixels. Assumes at least one bright star in view.
             if self.latest_frame is not None:
-                self.mean_brightness = float(np.mean(self.latest_frame[::8, ::8]))
+                f = self.latest_frame
+                gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) if f.ndim == 3 else f
+                self.mean_brightness = float(cv2.blur(gray, (3, 3)).max())
 
         # Handle Stream Recording
         if self.recorder.is_recording:
