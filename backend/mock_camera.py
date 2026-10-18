@@ -26,7 +26,7 @@ class MockCamera:
 
         self.format = "YUYV"
         self.params: Dict[str, Any] = {
-            "brightness": 128, "contrast": 50, "saturation": 0,
+            "brightness": 0, "contrast": 50, "saturation": 0,
             "gain": 64, "exposure": 1000, "sharpness": 50, "auto_exposure": 0,
             "auto_wb": 0, "gamma": 100
         }
@@ -464,10 +464,10 @@ class MockCamera:
                     frame[fy - pr : fy + pr + 1, fx - pr : fx + pr + 1], scaled
                 )
 
-        # 2. Brightness (black level offset)
-        brightness_val = float(self.params.get("brightness", 128))
-        if brightness_val != 128:
-            diff = int((brightness_val - 128.0) * 0.8)
+        # 2. Brightness (black level offset, range -64 to 64)
+        brightness_val = float(self.params.get("brightness", 0))
+        if brightness_val != 0:
+            diff = int(brightness_val * 1.5)
             if diff > 0:
                 frame = cv2.add(frame, diff)
             elif diff < 0:
@@ -538,6 +538,8 @@ class MockCamera:
 
     def set_camera_param(self, prop: str, value: float) -> bool:
         with self.lock:
+            if prop == "exposure":
+                self.params["auto_exposure"] = 0
             self.params[prop] = value
         return True
 

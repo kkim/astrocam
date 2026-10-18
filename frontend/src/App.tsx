@@ -22,8 +22,7 @@ const CAMERA_SETTING_KEYS: (keyof Controls)[] = [
   'contrast',
   'saturation',
   'sharpness',
-  'gamma',
-  'auto_exposure'
+  'gamma'
 ];
 
 interface Controls {
@@ -160,7 +159,7 @@ const formatGalleryItem = (item: any): GalleryItem => {
 
 function App() {
   const [controls, setControls] = useState<Controls>({
-    brightness: 128, contrast: 50, saturation: 0, gain: 64,
+    brightness: 0, contrast: 50, saturation: 0, gain: 64,
     exposure: 1000, sharpness: 50, gamma: 100, average: 1, auto_exposure: 0
   });
   const [status, setStatus] = useState<string>('Ready');
@@ -242,7 +241,7 @@ function App() {
     if (!ctx) return;
 
     const drawHistogram = (data: number[]) => {
-      const w = canvas.width;  // 128
+      const w = canvas.width;  // 256
       const h = canvas.height; // 48
       ctx.clearRect(0, 0, w, h);
 
@@ -250,13 +249,30 @@ function App() {
       const logCounts = data.map(c => Math.log10(c + 1));
       const maxLog = Math.max(...logCounts, 1.0);
 
-      ctx.fillStyle = '#58a6ff'; // Accent cyan/blue matching AstroCam theme
+      // 1. Fill area under the curve
+      ctx.beginPath();
+      ctx.moveTo(0, h);
       for (let x = 0; x < w && x < logCounts.length; x++) {
-        const barH = (logCounts[x] / maxLog) * (h - 2);
-        if (barH > 0) {
-          ctx.fillRect(x, h - barH, 1, barH);
-        }
+        const barH = (logCounts[x] / maxLog) * (h - 4);
+        ctx.lineTo(x, h - barH);
       }
+      ctx.lineTo(Math.min(w, logCounts.length) - 1, h);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(88, 166, 255, 0.35)';
+      ctx.fill();
+
+      // 2. Draw thicker solid contour line on top
+      ctx.beginPath();
+      for (let x = 0; x < w && x < logCounts.length; x++) {
+        const barH = (logCounts[x] / maxLog) * (h - 4);
+        const y = h - barH;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = '#58a6ff';
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
     };
 
     const fetchHistogram = async () => {
@@ -824,7 +840,7 @@ function App() {
           </div>
           <div className="stream-histogram">
             <span className="stream-histogram-label">HIST (LOG)</span>
-            <canvas ref={histCanvasRef} width={128} height={48} className="stream-histogram-canvas" />
+            <canvas ref={histCanvasRef} width={256} height={48} className="stream-histogram-canvas" />
           </div>
         </div>
 
@@ -924,26 +940,6 @@ function App() {
             <div className="rig-toggle">
               <button className={cameraEngine === 'mock' ? 'active' : ''} onClick={() => handleSwitchCamera('mock')}>Mock</button>
               <button className={cameraEngine === 'real' ? 'active' : ''} onClick={() => handleSwitchCamera('real')}>Real</button>
-            </div>
-          </div>
-
-          <div className="control-section" style={{ marginTop: '-12px' }}>
-            <div className="section-header"><Sliders size={16} /> Pixel Format</div>
-            <div className="rig-toggle">
-              <button 
-                className={cameraFormat === 'YUYV' ? 'active' : ''} 
-                onClick={() => handleSwitchCameraFormat('YUYV')}
-                title="Uncompressed YUYV (4:2:2). Recommended for astrophotography to prevent lossy JPEG macroblock compression and preserve true sensor noise."
-              >
-                YUYV (Uncompressed)
-              </button>
-              <button 
-                className={cameraFormat === 'MJPG' ? 'active' : ''} 
-                onClick={() => handleSwitchCameraFormat('MJPG')}
-                title="Hardware MJPEG compressed stream. Use as fallback if YUYV experiences driver or USB throughput issues."
-              >
-                MJPG (Compressed)
-              </button>
             </div>
           </div>
 
@@ -1289,6 +1285,51 @@ function App() {
 
           <div className="control-section">
             <div className="section-header"><RefreshCw size={16} /> Camera Settings</div>
+
+            <div className="control-group">
+              <label>Pixel Format</label>
+              <div className="preset-row">
+                <button 
+                  type="button"
+                  className={cameraFormat === 'YUYV' ? 'active' : ''} 
+                  onClick={() => handleSwitchCameraFormat('YUYV')}
+                  title="Uncompressed YUYV (4:2:2). Recommended for astrophotography to prevent lossy JPEG macroblock compression and preserve true sensor noise."
+                >
+                  YUYV
+                </button>
+                <button 
+                  type="button"
+                  className={cameraFormat === 'MJPG' ? 'active' : ''} 
+                  onClick={() => handleSwitchCameraFormat('MJPG')}
+                  title="Hardware MJPEG compressed stream. Use as fallback if YUYV experiences driver or USB throughput issues."
+                >
+                  MJPG
+                </button>
+              </div>
+            </div>
+
+            <div className="control-group">
+              <label>Auto Exposure</label>
+              <div className="preset-row">
+                <button 
+                  type="button"
+                  className={!controls.auto_exposure ? 'active' : ''} 
+                  onClick={() => updateControl('auto_exposure', 0)}
+                  title="Manual exposure mode"
+                >
+                  Manual (0)
+                </button>
+                <button 
+                  type="button"
+                  className={controls.auto_exposure ? 'active' : ''} 
+                  onClick={() => updateControl('auto_exposure', 1)}
+                  title="Automatic exposure mode (Aperture Priority AEC)"
+                >
+                  Auto (1)
+                </button>
+              </div>
+            </div>
+
             {CAMERA_SETTING_KEYS.map((key) => {
               const value = controls ? controls[key] : 0;
               let minVal = 0;
@@ -1304,9 +1345,9 @@ function App() {
                 const timeStr = ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms.toFixed(1)}ms`;
                 labelText = `Exposure: ${value} (~${timeStr})`;
               } else if (key === 'brightness') {
-                minVal = 0;
-                maxVal = 255;
-                const note = value === 128 ? ' (128 = Optimal Black Offset, No 0-Clipping)' : (value || 0) < 128 ? ' (Low Offset - Warning: 0-Clipping)' : ' (High Pedestal)';
+                minVal = -128;
+                maxVal = 128;
+                const note = value === 0 ? ' (0 = Neutral Black Level Offset)' : (value || 0) < 0 ? ' (Low Offset - Warning: 0-Clipping)' : ' (High Pedestal)';
                 labelText = `Brightness: ${value}${note}`;
               } else if (key === 'gain') {
                 minVal = 0;
@@ -1335,10 +1376,6 @@ function App() {
                 const gammaRatio = ((value || 100) / 100).toFixed(2);
                 const note = value === 100 ? ' (100 = 1.0γ Linear)' : value === 300 ? ' (300 = 3.0γ Default)' : ` (${gammaRatio}γ)`;
                 labelText = `Gamma: ${value ?? 100}${note}`;
-              } else if (key === 'auto_exposure') {
-                minVal = 0;
-                maxVal = 1;
-                labelText = `Auto Exposure: ${value ? 'Auto (1)' : 'Manual (0)'}`;
               }
 
               return (

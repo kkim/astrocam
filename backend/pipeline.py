@@ -91,7 +91,7 @@ class AstroPipeline:
         self.is_running = True
         self.fps = 0.0
         self.mean_brightness = 0.0
-        self.histogram = [0] * 128
+        self.histogram = [0] * 256
         self._frame_count = 0
         self._last_fps_calc_time = time.time()
 
@@ -241,14 +241,14 @@ class AstroPipeline:
                     self.acc_buffer = None
                     self.acc_count = 0
 
-            # Calculate 128-bin luminance histogram (bin size = 2) on latest displayed frame
+            # Calculate 256-bin luminance histogram (bin size = 1) on latest displayed frame
             if self.latest_frame is not None:
                 sample = self.latest_frame[::4, ::4]
                 if sample.ndim == 3:
                     sample_gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
                 else:
                     sample_gray = sample
-                hist = cv2.calcHist([sample_gray], [0], None, [128], [0, 256])
+                hist = cv2.calcHist([sample_gray], [0], None, [256], [0, 256])
                 self.histogram = [int(v[0]) for v in hist]
 
             # FPS Calculation
