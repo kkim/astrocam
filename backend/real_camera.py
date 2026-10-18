@@ -24,8 +24,9 @@ class RealCamera:
         self._last_error_log_time = 0
         
         self.params: Dict[str, Any] = {
-            "brightness": 128, "contrast": 32, "saturation": 64,
-            "gain": 0, "exposure": 156, "sharpness": 0, "auto_exposure": 0
+            "brightness": 128, "contrast": 50, "saturation": 0,
+            "gain": 64, "exposure": 1000, "sharpness": 50, "auto_exposure": 0,
+            "auto_wb": 0, "gamma": 100
         }
         
         self._init_camera()
@@ -63,14 +64,21 @@ class RealCamera:
                 self.raw_frame = None
             return False
 
-        # Attempt preferred format
+        # Attempt preferred format (default: uncompressed YUYV)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.format))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        # Quick grab check: if preferred format (e.g. YUYV) fails on this device, fall back to MJPG
-        if not self.cap.grab():
+        # Allow brief driver settling and retry grab check before falling back
+        grabbed = False
+        for _ in range(3):
+            if self.cap.grab():
+                grabbed = True
+                break
+            time.sleep(0.05)
+
+        if not grabbed:
             if self.format != 'MJPG':
                 event_logger.log(f"Camera warning: Format {self.format} failed to capture, falling back to MJPG...")
                 self.format = 'MJPG'
@@ -78,7 +86,7 @@ class RealCamera:
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
 
-        # Re-apply stored parameters
+        # Re-apply stored parameters (exposure, gain, auto_wb=0, etc.)
         self._apply_all_params()
 
         event_logger.log(f"Camera Connected: /dev/video{self.camera_id} ('{self.device_name}') at {self.width}x{self.height} [{self.format}]")
@@ -95,10 +103,20 @@ class RealCamera:
             "exposure": cv2.CAP_PROP_EXPOSURE,
             "sharpness": cv2.CAP_PROP_SHARPNESS,
             "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE,
+            "auto_wb": cv2.CAP_PROP_AUTO_WB,
+            "white_balance_automatic": cv2.CAP_PROP_AUTO_WB,
+            "gamma": cv2.CAP_PROP_GAMMA,
         }
         for prop, value in self.params.items():
             if prop in mapping:
-                val = (3 if value > 0 else 1) if prop == "auto_exposure" else value
+                if prop == "auto_exposure":
+                    val = 3 if value > 0 else 1
+                elif prop in ("auto_wb", "white_balance_automatic"):
+                    val = 1 if value > 0 else 0
+                elif prop == "gamma":
+                    val = int(np.clip(value, 100, 500))
+                else:
+                    val = value
                 try:
                     self.cap.set(mapping[prop], val)
                 except Exception:
@@ -170,12 +188,24 @@ class RealCamera:
             "exposure": cv2.CAP_PROP_EXPOSURE,
             "sharpness": cv2.CAP_PROP_SHARPNESS,
             "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE,
+            "auto_wb": cv2.CAP_PROP_AUTO_WB,
+            "white_balance_automatic": cv2.CAP_PROP_AUTO_WB,
+            "gamma": cv2.CAP_PROP_GAMMA,
         }
         with self.lock:
             if prop in mapping:
+                if prop == "gamma":
+                    value = float(np.clip(value, 100, 500))
                 self.params[prop] = value
                 if self.cap and self.cap.isOpened():
-                    val = (3 if value > 0 else 1) if prop == "auto_exposure" else value
+                    if prop == "auto_exposure":
+                        val = 3 if value > 0 else 1
+                    elif prop in ("auto_wb", "white_balance_automatic"):
+                        val = 1 if value > 0 else 0
+                    elif prop == "gamma":
+                        val = int(value)
+                    else:
+                        val = value
                     try:
                         # If setting manual exposure, ensure auto_exposure is turned off first
                         if prop == "exposure":
@@ -213,10 +243,17 @@ class RealCamera:
                 "brightness": cv2.CAP_PROP_BRIGHTNESS,
                 "exposure": cv2.CAP_PROP_EXPOSURE,
                 "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE,
+                "auto_wb": cv2.CAP_PROP_AUTO_WB,
+                "gamma": cv2.CAP_PROP_GAMMA,
             }.items():
                 try:
                     val = self.cap.get(prop_id)
-                    res[p] = (1 if val >= 3 else 0) if p == "auto_exposure" else val
+                    if p == "auto_exposure":
+                        res[p] = 1 if val >= 3 else 0
+                    elif p == "auto_wb":
+                        res[p] = 1 if val > 0 else 0
+                    else:
+                        res[p] = val
                 except Exception:
                     pass
         return res
@@ -235,6 +272,8 @@ class RealCamera:
 
     def close(self):
         self.is_running = False
+        if hasattr(self, "capture_thread") and self.capture_thread.is_alive():
+            self.capture_thread.join(timeout=1.0)
         if self.cap:
             try:
                 self.cap.release()

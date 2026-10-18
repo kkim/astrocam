@@ -127,6 +127,37 @@ body, html, #root {
   gap: 4px;
 }
 
+.stream-histogram {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: rgba(13, 17, 23, 0.75);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.stream-histogram-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #8b949e;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.stream-histogram-canvas {
+  width: 128px;
+  height: 48px;
+  display: block;
+}
+
 /* Layout Grid */
 .layout-grid {
   display: grid;
@@ -781,6 +812,32 @@ input[type="number"] {
 }
 
 .reconnect-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.restart-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.restart-btn:hover:not(:disabled) {
+  background: rgba(218, 54, 51, 0.15);
+  border-color: #f85149;
+  color: #f85149;
+}
+
+.restart-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

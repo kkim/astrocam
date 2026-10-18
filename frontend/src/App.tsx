@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, Compass, Circle, Square, Layers, Sparkles } from 'lucide-react';
+import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -22,6 +22,7 @@ const CAMERA_SETTING_KEYS: (keyof Controls)[] = [
   'contrast',
   'saturation',
   'sharpness',
+  'gamma',
   'auto_exposure'
 ];
 
@@ -32,6 +33,7 @@ interface Controls {
   gain: number;
   exposure: number;
   sharpness: number;
+  gamma?: number;
   average?: number;
   accumulation_count?: number;
   auto_exposure: number;
@@ -158,8 +160,8 @@ const formatGalleryItem = (item: any): GalleryItem => {
 
 function App() {
   const [controls, setControls] = useState<Controls>({
-    brightness: 128, contrast: 32, saturation: 64, gain: 0,
-    exposure: 300, sharpness: 0, average: 1, auto_exposure: 0
+    brightness: 128, contrast: 50, saturation: 0, gain: 64,
+    exposure: 1000, sharpness: 50, gamma: 100, average: 1, auto_exposure: 0
   });
   const [status, setStatus] = useState<string>('Ready');
   const [logs, setLogs] = useState<string[]>([]);
@@ -168,6 +170,7 @@ function App() {
   const [mountEngine, setMountEngine] = useState<string>('mock');
   const [cameraFormat, setCameraFormat] = useState<'YUYV' | 'MJPG'>('YUYV');
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const [isRestarting, setIsRestarting] = useState<boolean>(false);
   const [accumulationCount, setAccumulationCount] = useState<number>(10);
   const [recordFormat, setRecordFormat] = useState<'tif' | 'jpg'>('tif');
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>({
@@ -216,6 +219,8 @@ function App() {
     mount_mode?: string;
     camera_format?: string;
     recording?: RecordingStatus;
+    corrupted_frames_dropped?: number;
+    histogram?: number[];
   }>({
     connected: true,
     mean_brightness: 0,
@@ -227,6 +232,54 @@ function App() {
   });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const logWindowRef = useRef<HTMLDivElement>(null);
+  const histCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const canvas = histCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const drawHistogram = (data: number[]) => {
+      const w = canvas.width;  // 128
+      const h = canvas.height; // 48
+      ctx.clearRect(0, 0, w, h);
+
+      // Hardcoded log scaling: log10(count + 1)
+      const logCounts = data.map(c => Math.log10(c + 1));
+      const maxLog = Math.max(...logCounts, 1.0);
+
+      ctx.fillStyle = '#58a6ff'; // Accent cyan/blue matching AstroCam theme
+      for (let x = 0; x < w && x < logCounts.length; x++) {
+        const barH = (logCounts[x] / maxLog) * (h - 2);
+        if (barH > 0) {
+          ctx.fillRect(x, h - barH, 1, barH);
+        }
+      }
+    };
+
+    const fetchHistogram = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/histogram`);
+        if (res.ok && active) {
+          const json = await res.json();
+          if (Array.isArray(json.histogram) && json.histogram.length > 0) {
+            drawHistogram(json.histogram);
+          }
+        }
+      } catch {
+        // ignore fetch errors
+      }
+    };
+
+    fetchHistogram();
+    const interval = setInterval(fetchHistogram, 500);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const handleSetAccumulationCount = (count: number) => {
     setAccumulationCount(count);
@@ -512,6 +565,47 @@ function App() {
     });
   };
 
+  const handleRestart = async () => {
+    if (!window.confirm("Restart AstroCam service? Live streaming and camera connection will briefly reset.")) {
+      return;
+    }
+    setIsRestarting(true);
+    setStatus("Restarting AstroCam service...");
+    try {
+      await fetch(`${API_BASE}/system/restart`, { method: 'POST' });
+      showToast("Service restarting... Reconnecting soon.", 4000);
+    } catch (e: any) {
+      console.error("Error triggering restart:", e);
+    }
+
+    // Wait 3 seconds, then poll /status until the backend is back online
+    setTimeout(() => {
+      const startTime = Date.now();
+      const pollInterval = setInterval(async () => {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2000);
+          const res = await fetch(`${API_BASE}/status`, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            clearInterval(pollInterval);
+            setIsRestarting(false);
+            showToast("AstroCam restarted successfully!", 3000);
+            setTimeout(() => {
+              window.location.reload();
+            }, 600);
+          }
+        } catch {
+          if (Date.now() - startTime > 25000) {
+            clearInterval(pollInterval);
+            setIsRestarting(false);
+            showToast("Restart timeout. Please check system status or refresh.", 5000);
+          }
+        }
+      }, 1500);
+    }, 2500);
+  };
+
   const handleToggleRecording = () => {
     if (recordingStatus.is_recording) {
       setStatus('Stopping recording...');
@@ -693,6 +787,15 @@ function App() {
                 Reconnect
               </button>
             )}
+            <button 
+              className="restart-btn" 
+              onClick={handleRestart} 
+              disabled={isRestarting}
+              title="Restart AstroCam service"
+            >
+              <RotateCcw size={12} className={isRestarting ? 'spin' : ''} />
+              {isRestarting ? 'Restarting...' : 'Restart'}
+            </button>
           </div>
         </header>
 
@@ -708,11 +811,20 @@ function App() {
               <span>Stack: 1x (Raw)</span>
             )}
             <span>Luminance: {(health.mean_brightness || 0).toFixed(1)}</span>
+            {(health.corrupted_frames_dropped ?? 0) > 0 && (
+              <span style={{ color: '#f85149', fontWeight: 600 }} title="Corrupted glitch frames dropped due to sudden star peak position jump">
+                Corrupted: {health.corrupted_frames_dropped} dropped
+              </span>
+            )}
             {sky && (
               <span title="Azimuth from north / altitude above the horizon">
                 Az {sky.azimuth.toFixed(1)}° · Alt {sky.altitude.toFixed(1)}°
               </span>
             )}
+          </div>
+          <div className="stream-histogram">
+            <span className="stream-histogram-label">HIST (LOG)</span>
+            <canvas ref={histCanvasRef} width={128} height={48} className="stream-histogram-canvas" />
           </div>
         </div>
 
@@ -1194,28 +1306,35 @@ function App() {
               } else if (key === 'brightness') {
                 minVal = 0;
                 maxVal = 255;
-                const note = value === 128 ? ' (128 = Neutral Black Level)' : (value || 0) < 128 ? ' (Dark Offset - Clips Blacks)' : ' (Bright Offset)';
+                const note = value === 128 ? ' (128 = Optimal Black Offset, No 0-Clipping)' : (value || 0) < 128 ? ' (Low Offset - Warning: 0-Clipping)' : ' (High Pedestal)';
                 labelText = `Brightness: ${value}${note}`;
               } else if (key === 'gain') {
                 minVal = 0;
-                maxVal = 255;
-                const note = value === 0 ? ' (0 = Unity 1x, Max Dynamic Range)' : ` (+${(((value || 0) / 255) * 100).toFixed(0)}% Boost)`;
+                maxVal = 128;
+                const note = value === 0 ? ' (0 = Min Gain, Noise Clipped)' : value === 64 ? ' (64 = Recommended Astro Gain)' : ` (${value}/128 Analog Gain)`;
                 labelText = `Gain: ${value}${note}`;
               } else if (key === 'contrast') {
                 minVal = 0;
-                maxVal = 255;
-                const note = value === 32 ? ' (32 = Neutral Linear)' : ' (Non-linear S-Curve)';
+                maxVal = 100;
+                const note = value === 50 ? ' (50 = Linear Default)' : '';
                 labelText = `Contrast: ${value}${note}`;
               } else if (key === 'saturation') {
                 minVal = 0;
-                maxVal = 255;
-                const note = value === 64 ? ' (64 = Neutral Color)' : value === 0 ? ' (0 = Monochrome)' : '';
+                maxVal = 100;
+                const note = value === 0 ? ' (0 = Monochrome, No Color Distortion)' : value === 64 ? ' (64 = Default Color)' : ` (${value}/100)`;
                 labelText = `Saturation: ${value}${note}`;
               } else if (key === 'sharpness') {
                 minVal = 0;
-                maxVal = 6;
-                const note = value === 0 ? ' (0 = Off, Recommended for Astro)' : ' (Warning: Ringing Halos)';
+                maxVal = 100;
+                const note = value === 50 ? ' (50 = Neutral Pass-through)' : (value || 0) < 50 ? ' (<50 = FW Low-pass Denoising/Blur)' : ' (>50 = Edge Sharpening)';
                 labelText = `Sharpness: ${value}${note}`;
+              } else if (key === 'gamma') {
+                minVal = 100;
+                maxVal = 500;
+                stepVal = 1;
+                const gammaRatio = ((value || 100) / 100).toFixed(2);
+                const note = value === 100 ? ' (100 = 1.0γ Linear)' : value === 300 ? ' (300 = 3.0γ Default)' : ` (${gammaRatio}γ)`;
+                labelText = `Gamma: ${value ?? 100}${note}`;
               } else if (key === 'auto_exposure') {
                 minVal = 0;
                 maxVal = 1;

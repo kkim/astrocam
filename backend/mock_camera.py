@@ -26,8 +26,9 @@ class MockCamera:
 
         self.format = "YUYV"
         self.params: Dict[str, Any] = {
-            "brightness": 128, "contrast": 32, "saturation": 64,
-            "gain": 0, "exposure": 300, "sharpness": 0, "auto_exposure": 0
+            "brightness": 128, "contrast": 50, "saturation": 0,
+            "gain": 64, "exposure": 1000, "sharpness": 50, "auto_exposure": 0,
+            "auto_wb": 0, "gamma": 100
         }
 
         # Drift position
@@ -501,6 +502,14 @@ class MockCamera:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[:, :, None].astype(np.float32)
             f_flt = frame.astype(np.float32)
             frame = np.clip(gray + (f_flt - gray) * sat_scale, 0.0, 255.0).astype(np.uint8)
+
+        # 6. Gamma (Power-law tone curve)
+        gamma_val = float(self.params.get("gamma", 100))
+        if gamma_val != 100 and gamma_val > 0:
+            power = 100.0 / gamma_val
+            x = np.arange(256, dtype=np.float32) / 255.0
+            lut = np.clip((x ** power) * 255.0, 0.0, 255.0).astype(np.uint8)
+            frame = cv2.LUT(frame, lut)
 
         return frame
 

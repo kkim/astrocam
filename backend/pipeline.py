@@ -3,6 +3,7 @@ import numpy as np
 import time
 import threading
 import os
+import collections
 from datetime import datetime
 from logger import event_logger
 from alignment_utils import align_images, detect_stars
@@ -90,8 +91,15 @@ class AstroPipeline:
         self.is_running = True
         self.fps = 0.0
         self.mean_brightness = 0.0
+        self.histogram = [0] * 128
         self._frame_count = 0
         self._last_fps_calc_time = time.time()
+
+        # Star Peak Tracking & Corrupted Frame Filter
+        self.peak_history = collections.deque(maxlen=10)
+        self.corrupted_frames_dropped = 0
+        self._consecutive_peak_drops = 0
+        self._last_corrupt_log_time = 0.0
         
         # Tracking & Calibration State
         self.auto_tracking = False
@@ -164,6 +172,43 @@ class AstroPipeline:
         completed_count = 0
 
         with self.lock:
+            # 1. Star peak detection & corrupted frame filter:
+            # A 3x3 box blur rejects single hot pixels while locating true star center.
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+            blurred = cv2.blur(gray, (3, 3))
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
+            self.mean_brightness = float(max_val)
+
+            # If a distinct star or light source is detected (peak >= 15):
+            # Compare peak location against median of last 10 valid frames.
+            # If peak jumps by > 30px (e.g. USB line-drop / YUYV packet shift), drop the corrupted frame!
+            if max_val >= 15:
+                if len(self.peak_history) >= 3:
+                    med_x = float(np.median([p[0] for p in self.peak_history]))
+                    med_y = float(np.median([p[1] for p in self.peak_history]))
+                    dist = float(np.hypot(max_loc[0] - med_x, max_loc[1] - med_y))
+
+                    if dist > 30.0:
+                        self._consecutive_peak_drops += 1
+                        if self._consecutive_peak_drops < 8:
+                            self.corrupted_frames_dropped += 1
+                            now = time.time()
+                            if now - self._last_corrupt_log_time >= 1.0:
+                                event_logger.log(
+                                    f"Dropped corrupted frame: star peak jumped {dist:.1f}px to {max_loc} "
+                                    f"(median: ({med_x:.0f}, {med_y:.0f}))"
+                                )
+                                self._last_corrupt_log_time = now
+                            return  # Discard frame from accumulation, stream, and disk!
+                        else:
+                            # Slew or new target acquisition: reset rolling history
+                            self.peak_history.clear()
+                            self._consecutive_peak_drops = 0
+                    else:
+                        self._consecutive_peak_drops = 0
+
+                self.peak_history.append(max_loc)
+
             # Continuous Live Block Accumulation (1x = raw, 10x, 25x, 100x)
             if self.accumulation_count <= 1:
                 self.latest_frame = frame
@@ -186,15 +231,25 @@ class AstroPipeline:
                     completed_count = self.acc_count
                     avg_float = self.acc_buffer / self.acc_count
                     if self.recorder.file_format in ("tif", "tiff"):
-                        if np.max(avg_float) <= 255.0:
-                            completed_stack = np.clip(avg_float * 257.0, 0, 65535).astype(np.uint16)
-                        else:
-                            completed_stack = np.clip(avg_float, 0, 65535).astype(np.uint16)
+                        # If monochrome (e.g. saturation=0 or identical R,G,B), save single channel
+                        if avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2]):
+                            avg_float = avg_float[..., 0]
+                        completed_stack = np.clip(np.round(avg_float * 257.0), 0, 65535).astype(np.uint16)
                     else:
                         completed_stack = self.latest_frame.copy()
 
                     self.acc_buffer = None
                     self.acc_count = 0
+
+            # Calculate 128-bin luminance histogram (bin size = 2) on latest displayed frame
+            if self.latest_frame is not None:
+                sample = self.latest_frame[::4, ::4]
+                if sample.ndim == 3:
+                    sample_gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+                else:
+                    sample_gray = sample
+                hist = cv2.calcHist([sample_gray], [0], None, [128], [0, 256])
+                self.histogram = [int(v[0]) for v in hist]
 
             # FPS Calculation
             self._frame_count += 1
@@ -203,15 +258,6 @@ class AstroPipeline:
                 self.fps = self._frame_count / (now - self._last_fps_calc_time)
                 self._frame_count = 0
                 self._last_fps_calc_time = now
-                
-            # Focus metric ("luminance" in the UI): peak of the 3x3 box-filtered
-            # grayscale frame. A focused star concentrates its light into few
-            # pixels, so the peak is maximized at best focus. The 3x3 average
-            # rejects single hot pixels. Assumes at least one bright star in view.
-            if self.latest_frame is not None:
-                f = self.latest_frame
-                gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) if f.ndim == 3 else f
-                self.mean_brightness = float(cv2.blur(gray, (3, 3)).max())
 
         # Handle Stream Recording
         if self.recorder.is_recording:
@@ -252,6 +298,11 @@ class AstroPipeline:
 
             ret, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
             return jpeg.tobytes() if ret else None
+
+    def get_histogram(self):
+        """Returns the current 128-bin luminance histogram."""
+        with self.lock:
+            return list(self.histogram)
 
     def set_accumulation_count(self, count: int) -> bool:
         """
@@ -584,12 +635,25 @@ class AstroPipeline:
         """
         with self.lock:
             if self.latest_frame is None: return {"success": False, "error": "No frame"}
-            frame = self.latest_frame.copy()
+            
+            fmt = getattr(self.recorder, "file_format", "tif").lower()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            
+            if fmt in ("tif", "tiff"):
+                filename = f"cap_{timestamp}.tif"
+                if self.accumulation_count > 1 and self.acc_buffer is not None and self.acc_count > 0:
+                    avg_float = self.acc_buffer / self.acc_count
+                else:
+                    avg_float = self.latest_frame.astype(np.float32)
+                if avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2]):
+                    avg_float = avg_float[..., 0]
+                save_frame = np.clip(np.round(avg_float * 257.0), 0, 65535).astype(np.uint16)
+            else:
+                filename = f"cap_{timestamp}.jpg"
+                save_frame = self.latest_frame.copy()
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        filename = f"cap_{timestamp}.jpg"
         filepath = os.path.join(self.sequence_info["directory"], filename)
-        if cv2.imwrite(filepath, frame):
+        if cv2.imwrite(filepath, save_frame):
             try:
                 from sky_nav import write_nav_sidecar
                 write_nav_sidecar(filepath)
@@ -665,10 +729,9 @@ class AstroPipeline:
             if self.recorder.is_recording and self.accumulation_count > 1 and self.acc_buffer is not None and self.acc_count > 0:
                 avg_float = self.acc_buffer / self.acc_count
                 if self.recorder.file_format in ("tif", "tiff"):
-                    if np.max(avg_float) <= 255.0:
-                        stack_img = np.clip(avg_float * 257.0, 0, 65535).astype(np.uint16)
-                    else:
-                        stack_img = np.clip(avg_float, 0, 65535).astype(np.uint16)
+                    if avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2]):
+                        avg_float = avg_float[..., 0]
+                    stack_img = np.clip(np.round(avg_float * 257.0), 0, 65535).astype(np.uint16)
                 else:
                     stack_img = self.latest_frame.copy()
                 self.recorder.add_completed_stack(stack_img, self.acc_count)

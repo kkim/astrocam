@@ -8,8 +8,8 @@ class RealAstroRig(CompositeAstroRig):
     RealAstroRig bundles physical USB camera capture and physical GPIO motor control.
     Maintained for direct instantiation and backwards compatibility.
     """
-    def __init__(self, camera_id: Optional[int] = None, motor_pin: int = 18):
-        camera = RealCamera(camera_id=camera_id)
+    def __init__(self, camera_id: Optional[int] = None, motor_pin: int = 18, camera_format: str = "YUYV"):
+        camera = RealCamera(camera_id=camera_id, format=camera_format)
         mount = RealMount(motor_pin=motor_pin)
         super().__init__(camera, mount)
 

@@ -17,8 +17,8 @@ class MockAstroRig(BaseAstroRig):
         
         # Camera parameters
         self.params = {
-            "brightness": 128, "contrast": 32, "saturation": 64,
-            "gain": 0, "exposure": 300, "sharpness": 2, "auto_exposure": 0
+            "brightness": 128, "contrast": 50, "saturation": 0,
+            "gain": 64, "exposure": 1000, "sharpness": 50, "auto_exposure": 0
         }
         
         # Motor state

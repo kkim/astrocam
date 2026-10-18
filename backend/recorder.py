@@ -155,8 +155,11 @@ class StreamRecorder:
                 timestamp_str = dt.strftime("%Y%m%d_%H%M%S_%f")
                 filename = f"{timestamp_str}.{self.file_format}"
                 save_frame = frame
-                if self.file_format in ("tif", "tiff") and frame.dtype == np.uint8:
-                    save_frame = (frame.astype(np.uint16) * 257)
+                if self.file_format in ("tif", "tiff"):
+                    if frame.ndim == 3 and np.array_equal(frame[..., 0], frame[..., 1]) and np.array_equal(frame[..., 0], frame[..., 2]):
+                        save_frame = frame[..., 0]
+                    if save_frame.dtype == np.uint8:
+                        save_frame = (save_frame.astype(np.uint16) * 257)
                 try:
                     self.frame_queue.put_nowait((save_frame.copy(), filename))
                 except queue.Full:
@@ -184,13 +187,9 @@ class StreamRecorder:
 
         avg_float = self.acc_buffer / self.acc_count
         if self.file_format in ("tif", "tiff"):
-            # Accumulate into true 16-bit TIFF:
-            # Scale 8-bit [0, 255] float to full 16-bit dynamic range [0, 65535] (255 * 257 = 65535)
-            # Preserves all fractional accumulation levels with 16-bit depth precision
-            if np.max(avg_float) <= 255.0:
-                avg_frame = np.clip(avg_float * 257.0, 0, 65535).astype(np.uint16)
-            else:
-                avg_frame = np.clip(avg_float, 0, 65535).astype(np.uint16)
+            if avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2]):
+                avg_float = avg_float[..., 0]
+            avg_frame = np.clip(np.round(avg_float * 257.0), 0, 65535).astype(np.uint16)
         else:
             # 8-bit for JPG / PNG
             if np.max(avg_float) > 255.0:

@@ -16,6 +16,9 @@ from pydantic import BaseModel
 from typing import Optional
 import glob
 import json
+import subprocess
+import threading
+import time
 from mosaic_service import get_session_mosaic_info, trigger_mosaic_stitching
 
 app = FastAPI()
@@ -436,7 +439,15 @@ def get_status():
     status["mount_mode"] = mount_mode
     status["camera_format"] = rig.get_camera_format() if hasattr(rig, "get_camera_format") else camera_format
     status["recording"] = pipeline.get_recording_status()
+    status["corrupted_frames_dropped"] = getattr(pipeline, "corrupted_frames_dropped", 0)
+    status["histogram"] = pipeline.get_histogram() if hasattr(pipeline, "get_histogram") else []
     return status
+
+@app.get("/histogram")
+def get_histogram():
+    if not pipeline or not hasattr(pipeline, "get_histogram"):
+        return {"histogram": []}
+    return {"histogram": pipeline.get_histogram()}
 
 @app.get("/controls")
 def get_controls():
@@ -530,6 +541,29 @@ def get_panorama_status():
     if not panorama:
         return {"active": False}
     return panorama.get_status()
+
+@app.post("/system/restart")
+def restart_system():
+    event_logger.log("System restart requested from Web UI.")
+
+    def trigger_restart():
+        time.sleep(1.0)
+        try:
+            res = subprocess.run(["systemctl", "is-active", "--quiet", "astrocam"])
+            if res.returncode == 0:
+                subprocess.Popen(["sudo", "systemd-run", "systemctl", "restart", "astrocam"])
+                return
+        except Exception as e:
+            event_logger.log(f"Error checking systemd status: {e}")
+
+        try:
+            subprocess.Popen(["/bin/bash", "/home/kio/projects/astrocam/start.sh"])
+        except Exception as e:
+            event_logger.log(f"Error executing start.sh: {e}")
+        os._exit(0)
+
+    threading.Thread(target=trigger_restart, daemon=True).start()
+    return {"success": True, "message": "Restarting AstroCam service..."}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
