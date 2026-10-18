@@ -13,7 +13,8 @@ def get_astro_rig(
     mount_mode: Optional[str] = None,
     camera_id: Optional[int] = None,
     motor_pin: int = 18,
-    mode: Optional[str] = None
+    mode: Optional[str] = None,
+    camera_format: str = "YUYV"
 ) -> CompositeAstroRig:
     """
     Provisions an AstroRig with decoupled, independently selectable camera and mount engines.
@@ -30,13 +31,15 @@ def get_astro_rig(
         # Legacy single-argument invocation e.g. get_astro_rig("real")
         mount_mode = camera_mode
 
-    event_logger.log(f"Initializing AstroRig (Camera: {camera_mode.upper()}, Mount: {mount_mode.upper()})")
+    event_logger.log(f"Initializing AstroRig (Camera: {camera_mode.upper()} [{camera_format}], Mount: {mount_mode.upper()})")
 
     # Instantiate Camera
     if camera_mode == "real":
-        camera = RealCamera(camera_id=camera_id)
+        camera = RealCamera(camera_id=camera_id, format=camera_format)
     else:
         camera = MockCamera()
+        if hasattr(camera, "set_format"):
+            camera.set_format(camera_format)
 
     # Instantiate Mount
     if mount_mode == "real":

@@ -197,7 +197,7 @@ def load_config():
                 return data
         except Exception as e:
             event_logger.log(f"Error loading config: {e}")
-    return {"camera_mode": "mock", "mount_mode": "mock", "rig_mode": "mock"}
+    return {"camera_mode": "mock", "mount_mode": "mock", "rig_mode": "mock", "camera_format": "YUYV"}
 
 def save_config(config_data):
     try:
@@ -213,7 +213,8 @@ config = load_config()
 # Unified AstroRig & Processing Pipeline with decoupled camera and mount
 camera_mode = config.get("camera_mode", "mock")
 mount_mode = config.get("mount_mode", "mock")
-rig = get_astro_rig(camera_mode=camera_mode, mount_mode=mount_mode, motor_pin=18)
+camera_format = config.get("camera_format", "YUYV")
+rig = get_astro_rig(camera_mode=camera_mode, mount_mode=mount_mode, motor_pin=18, camera_format=camera_format)
 pipeline = AstroPipeline(rig)
 panorama = PanoramaManager(rig)
 
@@ -265,10 +266,10 @@ def set_rig_mode(update: RigUpdate):
         "rig_mode": camera_mode if camera_mode == mount_mode else "custom"
     })
 
-    rig = get_astro_rig(camera_mode=camera_mode, mount_mode=mount_mode, motor_pin=18)
+    rig = get_astro_rig(camera_mode=camera_mode, mount_mode=mount_mode, motor_pin=18, camera_format=camera_format)
     pipeline.rig = rig
     panorama.rig = rig
-    return {"success": True, "camera_mode": camera_mode, "mount_mode": mount_mode}
+    return {"success": True, "camera_mode": camera_mode, "mount_mode": mount_mode, "camera_format": camera_format}
 
 @app.post("/camera/reconnect")
 def reconnect_camera():
@@ -282,6 +283,28 @@ def reconnect_camera():
         success = rig.reconnect()
     status = rig.get_camera_status()
     return {"success": success, "camera_status": status}
+
+class CameraFormatUpdate(BaseModel):
+    format: str
+
+@app.post("/camera/format")
+def set_camera_format(req: CameraFormatUpdate):
+    global camera_format
+    if not rig:
+        return {"success": False, "error": "Rig not initialized"}
+    fmt = req.format.upper()
+    if fmt not in ("YUYV", "MJPG"):
+        return {"success": False, "error": f"Invalid format: {fmt}. Must be YUYV or MJPG."}
+    success = False
+    if hasattr(rig, "set_camera_format"):
+        success = rig.set_camera_format(fmt)
+    if success:
+        camera_format = fmt
+        save_config({"camera_format": fmt})
+        if pipeline:
+            pipeline.reset_accumulation()
+    current_fmt = rig.get_camera_format() if hasattr(rig, "get_camera_format") else camera_format
+    return {"success": success, "camera_format": current_fmt}
 
 @app.get("/logs")
 def get_logs():
@@ -334,14 +357,27 @@ def search_mock_sky(search: SkySearch):
 
 @app.get("/mock/sky/targets")
 def get_mock_sky_targets():
+    from sky_nav import get_sky_nav
+    from star_sources import get_all_planets_coords
+    planets = []
+    try:
+        nav = get_sky_nav()
+        cfg = nav.get_config()
+        lat = cfg.get("latitude", 37.77)
+        lon = cfg.get("longitude", -122.42)
+        planets = get_all_planets_coords(lat_deg=lat, lon_deg=lon)
+    except Exception as e:
+        event_logger.log(f"Error computing planet coords: {e}")
+
+    targets = []
     targets_file = os.path.join(os.path.dirname(__file__), "targets.json")
     if os.path.exists(targets_file):
         try:
             with open(targets_file, "r") as f:
-                return json.load(f)
+                targets = json.load(f)
         except Exception as e:
-            return []
-    return []
+            targets = []
+    return planets + targets
 
 @app.get("/stream")
 async def stream():
@@ -398,6 +434,7 @@ def get_status():
     status["mock_mode"] = motor_status.get("mock_mode", True)
     status["camera_mode"] = camera_mode
     status["mount_mode"] = mount_mode
+    status["camera_format"] = rig.get_camera_format() if hasattr(rig, "get_camera_format") else camera_format
     status["recording"] = pipeline.get_recording_status()
     return status
 

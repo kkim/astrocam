@@ -144,9 +144,9 @@ class SkyNav:
         return True
 
     def search_target(self, query: str) -> Dict[str, Any]:
-        """Resolve an object name (e.g. 'Polaris', 'M31') and point the sky at it."""
+        """Resolve an object name (e.g. 'Polaris', 'Jupiter', 'M31') and point the sky at it."""
         try:
-            name, ra, dec = resolve_name(query)
+            name, ra, dec = resolve_name(query, lat_deg=self.sky["latitude"], lon_deg=self.sky["longitude"])
         except Exception as e:
             return {"success": False, "error": str(e)}
         self.set(ra=ra, dec=dec, target=name)

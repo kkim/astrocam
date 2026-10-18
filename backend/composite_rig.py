@@ -65,6 +65,16 @@ class CompositeAstroRig(BaseAstroRig):
     def set_camera_param(self, prop: str, value: float) -> bool:
         return self.camera.set_camera_param(prop, value)
 
+    def set_camera_format(self, fmt: str) -> bool:
+        if hasattr(self.camera, "set_format"):
+            return self.camera.set_format(fmt)
+        return False
+
+    def get_camera_format(self) -> str:
+        if hasattr(self.camera, "format"):
+            return self.camera.format
+        return "YUYV"
+
     def get_camera_params(self) -> Dict[str, Any]:
         return self.camera.get_camera_params()
 

@@ -166,6 +166,7 @@ function App() {
   const [captures, setCaptures] = useState<GalleryItem[]>([]);
   const [cameraEngine, setCameraEngine] = useState<string>('mock');
   const [mountEngine, setMountEngine] = useState<string>('mock');
+  const [cameraFormat, setCameraFormat] = useState<'YUYV' | 'MJPG'>('YUYV');
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
   const [accumulationCount, setAccumulationCount] = useState<number>(10);
   const [recordFormat, setRecordFormat] = useState<'tif' | 'jpg'>('tif');
@@ -213,6 +214,7 @@ function App() {
     acc_count?: number;
     camera_mode?: string;
     mount_mode?: string;
+    camera_format?: string;
     recording?: RecordingStatus;
   }>({
     connected: true,
@@ -244,6 +246,7 @@ function App() {
           setHealth(hData);
           if (hData.camera_mode) setCameraEngine(hData.camera_mode);
           if (hData.mount_mode) setMountEngine(hData.mount_mode);
+          if (hData.camera_format) setCameraFormat(hData.camera_format);
           if (hData.recording) setRecordingStatus(hData.recording);
         }
 
@@ -375,30 +378,44 @@ function App() {
     return () => clearInterval(id);
   }, []);
 
+  const PLANET_NAMES = ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'moon', 'sun'];
+
+  const isPlanetQuery = (q: string) => {
+    const lower = q.trim().toLowerCase();
+    return PLANET_NAMES.includes(lower) || targets.some(t => t.type === 'planet' && (
+      t.name.toLowerCase() === lower || (t.alt && t.alt.toLowerCase() === lower)
+    ));
+  };
+
   const searchSky = (text: string = searchText) => {
     const query = text.trim();
     if (!query || searching) return;
-    // 1. Check recent history (instant, offline)
-    const knownHistory = sky?.history.find(h => h.name.toLowerCase() === query.toLowerCase());
-    if (knownHistory) {
-      setSearchText('');
-      setSearchMsg(`Pointing at ${knownHistory.name}`);
-      applySky({ ra: knownHistory.ra, dec: knownHistory.dec, target: knownHistory.name });
-      return;
+    setSearchIsOpen(false);
+
+    // If it's a planet or Moon/Sun, compute live ephemeris via backend (don't use stale history/cache)
+    if (!isPlanetQuery(query)) {
+      // 1. Check recent history (instant, offline)
+      const knownHistory = sky?.history.find(h => h.name.toLowerCase() === query.toLowerCase());
+      if (knownHistory) {
+        setSearchText('');
+        setSearchMsg(`Pointing at ${knownHistory.name}`);
+        applySky({ ra: knownHistory.ra, dec: knownHistory.dec, target: knownHistory.name });
+        return;
+      }
+      // 2. Check local catalog of ~250 Messier & named stars (instant, offline)
+      const knownTarget = targets.find(t => 
+        t.name.toLowerCase() === query.toLowerCase() || 
+        (t.alt && t.alt.toLowerCase() === query.toLowerCase())
+      );
+      if (knownTarget) {
+        setSearchText('');
+        const displayName = knownTarget.alt ? `${knownTarget.name} (${knownTarget.alt})` : knownTarget.name;
+        setSearchMsg(`Pointing at ${displayName}`);
+        applySky({ ra: knownTarget.ra, dec: knownTarget.dec, target: displayName });
+        return;
+      }
     }
-    // 2. Check local catalog of ~250 Messier & named stars (instant, offline)
-    const knownTarget = targets.find(t => 
-      t.name.toLowerCase() === query.toLowerCase() || 
-      (t.alt && t.alt.toLowerCase() === query.toLowerCase())
-    );
-    if (knownTarget) {
-      setSearchText('');
-      const displayName = knownTarget.alt ? `${knownTarget.name} (${knownTarget.alt})` : knownTarget.name;
-      setSearchMsg(`Pointing at ${displayName}`);
-      applySky({ ra: knownTarget.ra, dec: knownTarget.dec, target: displayName });
-      return;
-    }
-    // 3. Fallback to SIMBAD query
+    // 3. Fallback to backend live ephemeris / SIMBAD query
     setSearching(true);
     setSearchMsg('');
     fetch(`${API_BASE}/mock/sky/search`, {
@@ -456,6 +473,25 @@ function App() {
         showToast(`Mount set to ${data.mount_mode}`);
       }
     }).catch(e => showToast(`Error: ${e.message}`, 4000));
+  };
+
+  const handleSwitchCameraFormat = (fmt: 'YUYV' | 'MJPG') => {
+    setStatus(`Setting camera format to ${fmt}...`);
+    fetch(`${API_BASE}/camera/format`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format: fmt })
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          setCameraFormat(data.camera_format);
+          showToast(`Camera format set to ${data.camera_format}`);
+        } else {
+          showToast(`Format switch failed: ${data.error || 'Check camera support'}`, 4000);
+        }
+      })
+      .catch(e => showToast(`Error: ${e.message}`, 4000));
   };
 
   const handleReconnectCamera = () => {
@@ -663,7 +699,7 @@ function App() {
         <div className="stream-container">
           <img src={`${API_BASE}/stream`} alt="Live Stream" className="video-preview" />
           <div className="stream-overlay">
-            <span>{health.width || 0}x{health.height || 0} @ {(health.fps || 0).toFixed(1)} FPS</span>
+            <span>{health.width || 0}x{health.height || 0} @ {(health.fps || 0).toFixed(1)} FPS • {health.camera_format || cameraFormat}</span>
             {accumulationCount > 1 ? (
               <span style={{ color: '#58a6ff', fontWeight: 600 }}>
                 Stack: {health.acc_count ?? 1}/{accumulationCount} ({accumulationCount}x)
@@ -780,6 +816,26 @@ function App() {
           </div>
 
           <div className="control-section" style={{ marginTop: '-12px' }}>
+            <div className="section-header"><Sliders size={16} /> Pixel Format</div>
+            <div className="rig-toggle">
+              <button 
+                className={cameraFormat === 'YUYV' ? 'active' : ''} 
+                onClick={() => handleSwitchCameraFormat('YUYV')}
+                title="Uncompressed YUYV (4:2:2). Recommended for astrophotography to prevent lossy JPEG macroblock compression and preserve true sensor noise."
+              >
+                YUYV (Uncompressed)
+              </button>
+              <button 
+                className={cameraFormat === 'MJPG' ? 'active' : ''} 
+                onClick={() => handleSwitchCameraFormat('MJPG')}
+                title="Hardware MJPEG compressed stream. Use as fallback if YUYV experiences driver or USB throughput issues."
+              >
+                MJPG (Compressed)
+              </button>
+            </div>
+          </div>
+
+          <div className="control-section" style={{ marginTop: '-12px' }}>
             <div className="section-header"><Compass size={16} /> Mount Engine</div>
             <div className="rig-toggle">
               <button className={mountEngine === 'mock' ? 'active' : ''} onClick={() => handleSwitchMount('mock')}>Mock</button>
@@ -874,10 +930,14 @@ function App() {
                                         <div
                                           key={`h-${h.name}`}
                                           onClick={() => {
-                                            setSearchIsOpen(false);
-                                            setSearchText('');
-                                            setSearchMsg(`Pointing at ${h.name}`);
-                                            applySky({ ra: h.ra, dec: h.dec, target: h.name });
+                                            if (isPlanetQuery(h.name)) {
+                                              searchSky(h.name);
+                                            } else {
+                                              setSearchIsOpen(false);
+                                              setSearchText('');
+                                              setSearchMsg(`Pointing at ${h.name}`);
+                                              applySky({ ra: h.ra, dec: h.dec, target: h.name });
+                                            }
                                           }}
                                           style={{
                                             padding: '4px 8px',
@@ -891,7 +951,9 @@ function App() {
                                           onMouseEnter={e => (e.currentTarget.style.background = 'rgba(88, 166, 255, 0.15)')}
                                           onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                                         >
-                                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{h.name}</span>
+                                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                                            {isPlanetQuery(h.name) ? '🪐 ' : ''}{h.name}
+                                          </span>
                                           <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>🕒 recent</span>
                                         </div>
                                       ))}
@@ -907,14 +969,19 @@ function App() {
                                       )}
                                       {matchedTargets.map(t => {
                                         const label = t.alt ? `${t.name} (${t.alt})` : t.name;
+                                        const isPlanet = t.type === 'planet' || isPlanetQuery(t.name);
                                         return (
                                           <div
                                             key={`t-${t.name}`}
                                             onClick={() => {
-                                              setSearchIsOpen(false);
-                                              setSearchText('');
-                                              setSearchMsg(`Pointing at ${label}`);
-                                              applySky({ ra: t.ra, dec: t.dec, target: label });
+                                              if (isPlanet) {
+                                                searchSky(t.name);
+                                              } else {
+                                                setSearchIsOpen(false);
+                                                setSearchText('');
+                                                setSearchMsg(`Pointing at ${label}`);
+                                                applySky({ ra: t.ra, dec: t.dec, target: label });
+                                              }
                                             }}
                                             style={{
                                               padding: '4px 8px',
@@ -928,8 +995,10 @@ function App() {
                                             onMouseEnter={e => (e.currentTarget.style.background = 'rgba(88, 166, 255, 0.15)')}
                                             onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                                           >
-                                            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{t.name}</span>
-                                            <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                                            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                                              {isPlanet ? '🪐 ' : ''}{t.name}
+                                            </span>
+                                            <span style={{ fontSize: '10px', color: isPlanet ? 'var(--accent)' : 'var(--text-muted)' }}>
                                               {t.alt ? t.alt : t.type}
                                             </span>
                                           </div>

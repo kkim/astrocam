@@ -11,12 +11,12 @@ class RealCamera:
     Manages physical USB camera hardware (e.g. SVBONY SV205) using V4L2.
     Includes automatic device discovery, stream recovery, and reconnect capabilities.
     """
-    def __init__(self, camera_id: Optional[int] = None):
+    def __init__(self, camera_id: Optional[int] = None, format: str = 'YUYV'):
         self.camera_id = camera_id
         self.device_name = "Unknown"
         self.cap: Optional[cv2.VideoCapture] = None
         self.width, self.height = 1920, 1080
-        self.format = 'MJPG'
+        self.format = format.upper()
         self.raw_frame: Optional[np.ndarray] = None
         self.frame_id: int = 0
         self.lock = threading.Lock()
@@ -63,15 +63,25 @@ class RealCamera:
                 self.raw_frame = None
             return False
 
+        # Attempt preferred format
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.format))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+        # Quick grab check: if preferred format (e.g. YUYV) fails on this device, fall back to MJPG
+        if not self.cap.grab():
+            if self.format != 'MJPG':
+                event_logger.log(f"Camera warning: Format {self.format} failed to capture, falling back to MJPG...")
+                self.format = 'MJPG'
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.format))
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+
         # Re-apply stored parameters
         self._apply_all_params()
 
-        event_logger.log(f"Camera Connected: /dev/video{self.camera_id} ('{self.device_name}') at {self.width}x{self.height}")
+        event_logger.log(f"Camera Connected: /dev/video{self.camera_id} ('{self.device_name}') at {self.width}x{self.height} [{self.format}]")
         return True
 
     def _apply_all_params(self):
@@ -177,8 +187,27 @@ class RealCamera:
                         pass
         return True
 
+    def set_format(self, fmt: str) -> bool:
+        fmt = fmt.upper()
+        if fmt not in ("YUYV", "MJPG"):
+            event_logger.log(f"Camera error: Unsupported format {fmt}. Must be YUYV or MJPG.")
+            return False
+        if fmt == self.format:
+            return True
+        with self.lock:
+            old_fmt = self.format
+            self.format = fmt
+            event_logger.log(f"Camera: Switching format from {old_fmt} to {fmt}...")
+            success = self._init_camera()
+            if not success:
+                event_logger.log(f"Camera: Failed to initialize in {fmt}, reverting to {old_fmt}...")
+                self.format = old_fmt
+                self._init_camera()
+                return False
+            return True
+
     def get_camera_params(self) -> Dict[str, Any]:
-        res = {**self.params}
+        res = {**self.params, "format": self.format}
         if self.cap and self.cap.isOpened():
             for p, prop_id in {
                 "brightness": cv2.CAP_PROP_BRIGHTNESS,
@@ -200,7 +229,8 @@ class RealCamera:
             "height": self.height,
             "camera_id": self.camera_id,
             "device_name": self.device_name,
-            "camera_mode": "real"
+            "camera_mode": "real",
+            "format": self.format
         }
 
     def close(self):

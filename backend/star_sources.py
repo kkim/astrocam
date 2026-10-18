@@ -15,7 +15,7 @@ import os
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -199,11 +199,137 @@ def get_star_source(name: str) -> StarSource:
     return _instances[name]
 
 
-def resolve_name(query: str) -> Tuple[str, float, float]:
-    """Resolve an object name (Polaris, M31, NGC 7000, ...) to (name, ra_deg, dec_deg) via Sesame/SIMBAD."""
+PLANET_NAMES = {
+    "mercury": "Mercury",
+    "venus": "Venus",
+    "mars": "Mars",
+    "jupiter": "Jupiter",
+    "saturn": "Saturn",
+    "uranus": "Uranus",
+    "neptune": "Neptune",
+    "moon": "Moon",
+    "sun": "Sun",
+}
+
+
+PLANET_DIAMETERS_KM = {
+    "mercury": 4879.0,
+    "venus": 12104.0,
+    "mars": 6792.0,
+    "jupiter": 142984.0,
+    "saturn": 120536.0,
+    "uranus": 50724.0,
+    "neptune": 49244.0,
+    "moon": 3474.8,
+    "sun": 1392700.0,
+}
+
+
+PLANET_MAGNITUDES = {
+    "mercury": 0.0,
+    "venus": -4.3,
+    "mars": 0.5,
+    "jupiter": -2.6,
+    "saturn": 0.6,
+    "uranus": 5.7,
+    "neptune": 7.8,
+    "moon": -12.5,
+    "sun": -26.7,
+}
+
+
+def get_planet_info(planet_key: str, lat_deg: float = 37.77, lon_deg: float = -122.42,
+                    when: Optional[datetime] = None) -> Dict[str, Any]:
+    """Compute apparent RA, Dec, distance (AU), and apparent angular diameter (arcsec)."""
+    key = planet_key.lower().strip()
+    if key not in PLANET_NAMES:
+        raise ValueError(f"Unknown planet '{planet_key}'. Available: {list(PLANET_NAMES.values())}")
+    
+    from astropy.time import Time
+    from astropy.coordinates import solar_system_ephemeris, get_body, EarthLocation
+    import astropy.units as u
+
+    when = when or datetime.now(timezone.utc)
+    t = Time(when)
+    loc = EarthLocation(lat=lat_deg * u.deg, lon=lon_deg * u.deg)
+    with solar_system_ephemeris.set("builtin"):
+        coord = get_body(key, t, loc)
+    
+    dist_au = float(coord.distance.au)
+    diam_km = PLANET_DIAMETERS_KM.get(key, 10000.0)
+    ang_diam_arcsec = float((diam_km / (dist_au * 149597870.7)) * 206265.0)
+    mag = PLANET_MAGNITUDES.get(key, 1.0)
+    return {
+        "name": PLANET_NAMES[key],
+        "key": key,
+        "ra": float(coord.ra.deg),
+        "dec": float(coord.dec.deg),
+        "dist_au": dist_au,
+        "ang_diam_arcsec": ang_diam_arcsec,
+        "mag": mag,
+    }
+
+
+def get_planet_coords(planet_key: str, lat_deg: float = 37.77, lon_deg: float = -122.42,
+                      when: Optional[datetime] = None) -> Tuple[str, float, float]:
+    """Compute apparent RA and Dec (degrees) for a solar system body using Astropy's builtin ephemeris."""
+    info = get_planet_info(planet_key, lat_deg, lon_deg, when)
+    return info["name"], info["ra"], info["dec"]
+
+
+def get_all_planets_coords(lat_deg: float = 37.77, lon_deg: float = -122.42,
+                           when: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Return all solar system bodies with their current RA/Dec for the target catalog."""
+    out = []
+    when = when or datetime.now(timezone.utc)
+    for key, display_name in PLANET_NAMES.items():
+        try:
+            info = get_planet_info(key, lat_deg, lon_deg, when)
+            out.append({
+                "name": info["name"],
+                "alt": "Planet" if key not in ("moon", "sun") else key.capitalize(),
+                "type": "planet",
+                "ra": round(info["ra"], 5),
+                "dec": round(info["dec"], 5),
+                "mag": info["mag"],
+                "ang_diam_arcsec": round(info["ang_diam_arcsec"], 2)
+            })
+        except Exception:
+            pass
+    return out
+
+
+def get_visible_planets(ra0_deg: float, dec0_deg: float, radius_deg: float,
+                        lat_deg: float = 37.77, lon_deg: float = -122.42,
+                        when: Optional[datetime] = None) -> List[Any]:
+    """Return solar system bodies (ra, dec, mag, name, ang_diam_arcsec) within radius_deg of (ra0, dec0)."""
+    out: List[Any] = []
+    when = when or datetime.now(timezone.utc)
+    for key in PLANET_NAMES:
+        try:
+            info = get_planet_info(key, lat_deg, lon_deg, when)
+            r, d, r0, d0 = map(np.deg2rad, (info["ra"], info["dec"], ra0_deg, dec0_deg))
+            cos_sep = np.sin(d) * np.sin(d0) + np.cos(d) * np.cos(d0) * np.cos(r - r0)
+            sep_deg = float(np.rad2deg(np.arccos(np.clip(cos_sep, -1.0, 1.0))))
+            if sep_deg <= radius_deg:
+                out.append((info["ra"], info["dec"], info["mag"], info["name"], info["ang_diam_arcsec"]))
+        except Exception:
+            pass
+    return out
+
+
+def resolve_name(query: str, lat_deg: float = 37.77, lon_deg: float = -122.42) -> Tuple[str, float, float]:
+    """Resolve an object name (Polaris, Jupiter, M31, NGC 7000...) to (name, ra_deg, dec_deg)."""
     query = query.strip()
     if not query:
         raise ValueError("Empty search")
+    
+    # 1. Check solar system bodies first (instant, exact for current time)
+    key = query.lower()
+    if key in PLANET_NAMES:
+        return get_planet_coords(key, lat_deg, lon_deg)
+
+    # 2. Astronomical coordinates via Sesame/SIMBAD
     from astropy.coordinates import SkyCoord
     from astropy.utils.data import conf
     try:
