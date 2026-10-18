@@ -6,6 +6,8 @@ import os
 import json
 from typing import Optional, Dict, Any, Callable, Tuple
 from logger import event_logger
+from star_sources import get_star_source, altitude_deg
+from sky_nav import get_sky_nav
 
 class MockCamera:
     """
@@ -41,28 +43,38 @@ class MockCamera:
             except Exception:
                 pass
 
-        self.camera_angle = np.deg2rad(config_data.get("camera_angle", 45.0))
-        self.sim_drift_speed = float(config_data.get("sim_drift_speed", 60.0))
-        if self.sim_drift_speed < 30.0:
-            self.sim_drift_speed = 60.0
-        self.sim_drift_angle = self.camera_angle
+        # Drift speed and direction are derived from the sky settings (see _update_motion).
+        self.camera_angle = np.pi
+        self.sim_drift_speed = 0.0
+        self.sim_drift_angle = np.pi
 
-        self.radius = 5
+        self.radius = 8
         self.noise_canvas = np.clip(
             24.0 + np.random.normal(0.0, 2.5, (self.height + 64, self.width + 64, 3)),
             0.0, 255.0
         ).astype(np.uint8)
-        self.star_patches = self._setup_star_patches()
+        self._fallback_patches = self._setup_star_patches()
+        self.star_patches = self._fallback_patches
+
+        # Real-sky star field (catalog-driven). Pointing/optics live in the shared SkyNav.
+        self.nav = get_sky_nav()
+        self._sky_generation = 0
+        self.nav.subscribe(self._on_nav_change)
+        self._update_motion()
+        self._recenter()
+        self._reload_sky_async()
         self.raw_frame: Optional[np.ndarray] = None
 
         self.thread = threading.Thread(target=self._sim_loop, daemon=True)
         self.thread.start()
 
-    def _create_star_patch(self, radius: int = 5, peak: float = 220.0, sigma: float = 2.0) -> np.ndarray:
+    def _create_star_patch(self, radius: int = 8, peak: float = 220.0, sigma: Optional[float] = None) -> np.ndarray:
         """Creates a smooth astronomical point spread function (PSF) of given radius."""
         y, x = np.ogrid[-radius:radius+1, -radius:radius+1]
         dist_sq = x*x + y*y
         mask = dist_sq <= radius*radius
+        if sigma is None:
+            sigma = 0.35 * radius
         prof = np.exp(-dist_sq / (2.0 * sigma**2)) * mask * peak
         patch = np.repeat(prof[:, :, None], 3, axis=2)
         return patch.astype(np.float32)
@@ -95,6 +107,104 @@ class MockCamera:
 
         all_stars = [bright_star] + dim_stars + very_dim_stars
         return [(sx, sy, self._create_star_patch(radius=radius, peak=peak)) for sx, sy, peak in all_stars]
+
+    # ---- Catalog-driven sky -------------------------------------------------
+    @property
+    def sky(self) -> Dict[str, Any]:
+        return self.nav.sky
+
+    def _on_nav_change(self, changed):
+        """React to pointing/optics changes made through the shared navigation state."""
+        if changed & {"dec", "pixel_size_um", "focal_length_mm"}:
+            self._update_motion()
+        if changed & {"ra", "dec"}:
+            self._recenter()
+        if changed & {"ra", "dec", "pixel_size_um", "focal_length_mm", "backend"}:
+            self._reload_sky_async()
+
+    def _update_motion(self):
+        """
+        Derive the diurnal drift from the pointing and plate scale. Stars move west (toward -x in
+        the image, since north is up and east is right).
+        """
+        self.sim_drift_speed = self.nav.drift_px_per_sec()
+        self.camera_angle = np.pi
+        self.sim_drift_angle = np.pi
+
+    def _recenter(self):
+        """Put the pointing (RA/Dec) at the middle of the frame."""
+        self.pos_x = (self.full_width - self.width) / 2.0
+        self.pos_y = (self.full_height - self.height) / 2.0
+
+    def _reload_sky_async(self):
+        self._sky_generation += 1
+        gen = self._sky_generation
+        self.sky_status = {"state": "loading", "stars": 0, "message": f"Loading {self.sky['backend']} catalog..."}
+        threading.Thread(target=self._reload_sky, args=(gen, dict(self.sky)), daemon=True).start()
+
+    def _reload_sky(self, gen: int, sky: Dict[str, Any]):
+        """Query the catalog and project stars into virtual-canvas coordinates."""
+        try:
+            scale_rad = (sky["pixel_size_um"] * 1e-3 / sky["focal_length_mm"])  # radians per pixel
+            half_diag_px = 0.5 * float(np.hypot(self.full_width, self.full_height))
+            radius_deg = float(np.rad2deg(half_diag_px * scale_rad)) * 1.02
+            stars = get_star_source(sky["backend"]).query(sky["ra"], sky["dec"], radius_deg)
+
+            ra0, dec0 = np.deg2rad(sky["ra"]), np.deg2rad(sky["dec"])
+            patches = []
+            visible = []  # (mag, name) of stars landing on the simulated canvas
+            for ra, dec, mag, name in stars:
+                r, d = np.deg2rad(ra), np.deg2rad(dec)
+                # Gnomonic (tangent-plane) projection
+                cosc = np.sin(dec0) * np.sin(d) + np.cos(dec0) * np.cos(d) * np.cos(r - ra0)
+                if cosc <= 0:
+                    continue
+                xi = np.cos(d) * np.sin(r - ra0) / cosc
+                eta = (np.cos(dec0) * np.sin(d) - np.sin(dec0) * np.cos(d) * np.cos(r - ra0)) / cosc
+                x = int(round(self.full_width / 2 + xi / scale_rad))   # East to the right
+                y = int(round(self.full_height / 2 - eta / scale_rad))  # North up
+                m = self.radius
+                if not (m <= x < self.full_width - m and m <= y < self.full_height - m):
+                    continue
+                # Magnitude scaling: anchor magnitude 1.0 at peak = 220.0 counts.
+                # Every magnitude fainter is ~2.5x dimmer (flux ~ 10^(-0.4 * (mag - 1.0))).
+                flux = 220.0 * (10.0 ** (-0.4 * (mag - 1.0)))
+
+                # For stars mag <= 2.0 (bright stars like Polaris, Vega, Rigel), widen sigma and radius
+                if mag <= 2.0:
+                    # e.g. mag 2.0 -> sigma ~ 2.8, mag 0.0 -> sigma ~ 4.2, mag -1.4 (Sirius) -> sigma ~ 5.2
+                    star_sigma = 2.8 + max(0.0, 2.0 - mag) * 0.7
+                    star_radius = int(min(16, round(star_sigma * 2.5)))
+                else:
+                    star_radius = self.radius  # 8 px
+                    star_sigma = 2.4
+
+                peak = float(np.clip(flux, 0.5, 255.0))
+                patches.append((x, y, self._create_star_patch(radius=star_radius, peak=peak, sigma=star_sigma)))
+                visible.append((float(mag), name))
+
+            alt = altitude_deg(sky["ra"], sky["dec"], sky["latitude"], sky["longitude"])
+            if gen != self._sky_generation:
+                return  # superseded by a newer request
+            self.star_patches = patches
+            brightest = sorted(visible)[:3]
+            listing = ", ".join(f"{m:.1f} {n}" for m, n in brightest)
+            if len(visible) > len(brightest):
+                listing += ", ..."
+            note = f"{len(patches)} stars" + (f" ({listing})" if listing else "") + f"; target altitude {alt:.0f}°"
+            if alt < 0:
+                note += " (below horizon)"
+            self.sky_status = {"state": "ready", "stars": len(patches), "altitude": alt, "message": note}
+            self.nav.status = dict(self.sky_status)
+            event_logger.log(f"Sky loaded: {note}")
+        except Exception as e:
+            if gen != self._sky_generation:
+                return
+            self.star_patches = self._fallback_patches
+            self.sky_status = {"state": "error", "stars": 0,
+                               "message": f"{sky['backend']} failed ({e}); using fake stars"}
+            self.nav.status = dict(self.sky_status)
+            event_logger.log(f"Sky catalog error: {e}; using fake stars")
 
     def _get_current_duty(self) -> float:
         if self.get_duty_callback:
@@ -171,10 +281,11 @@ class MockCamera:
         for sx, sy, patch in self.star_patches:
             fx = sx - cx
             fy = sy - cy
-            if (fx - r) >= 0 and (fx + r + 1) <= self.width and (fy - r) >= 0 and (fy + r + 1) <= self.height:
+            pr = patch.shape[0] // 2
+            if (fx - pr) >= 0 and (fx + pr + 1) <= self.width and (fy - pr) >= 0 and (fy + pr + 1) <= self.height:
                 scaled = np.clip(patch * flux_factor, 0.0, 255.0).astype(np.uint8)
-                frame[fy - r : fy + r + 1, fx - r : fx + r + 1] = cv2.add(
-                    frame[fy - r : fy + r + 1, fx - r : fx + r + 1], scaled
+                frame[fy - pr : fy + pr + 1, fx - pr : fx + pr + 1] = cv2.add(
+                    frame[fy - pr : fy + pr + 1, fx - pr : fx + pr + 1], scaled
                 )
 
         # 2. Brightness (black level offset)
@@ -256,37 +367,9 @@ class MockCamera:
             "camera_angle": float(np.rad2deg(self.camera_angle))
         }
 
-    def set_camera_angle(self, angle_degrees: float) -> bool:
-        with self.lock:
-            self.camera_angle = np.deg2rad(angle_degrees)
-            self._save_sim_config()
-            event_logger.log(f"Mock camera angle set to {angle_degrees:.1f}°")
-        return True
-
-    def set_sim_drift(self, speed_pixels_per_sec: float, angle_degrees: float) -> bool:
-        with self.lock:
-            self.sim_drift_speed = float(speed_pixels_per_sec)
-            self.sim_drift_angle = np.deg2rad(angle_degrees)
-            self._save_sim_config()
-            event_logger.log(f"Mock drift set to {speed_pixels_per_sec:.1f} px/s at {angle_degrees:.1f}°")
-        return True
-
-    def _save_sim_config(self):
-        try:
-            config_data = {}
-            if os.path.exists("config.json"):
-                try:
-                    with open("config.json", "r") as f:
-                        config_data = json.load(f)
-                except Exception:
-                    pass
-            config_data["camera_angle"] = float(np.rad2deg(self.camera_angle))
-            config_data["sim_drift_speed"] = float(self.sim_drift_speed)
-            config_data["sim_drift_angle"] = float(np.rad2deg(self.sim_drift_angle))
-            with open("config.json", "w") as f:
-                json.dump(config_data, f)
-        except Exception as e:
-            event_logger.log(f"Error saving mock camera config: {e}")
-
     def close(self):
         self.is_running = False
+        try:
+            self.nav.unsubscribe(self._on_nav_change)
+        except Exception:
+            pass

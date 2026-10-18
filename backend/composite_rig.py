@@ -40,15 +40,17 @@ class CompositeAstroRig(BaseAstroRig):
     def camera_angle(self) -> float:
         return getattr(self.camera, "camera_angle", 0.0)
 
-    def set_camera_angle(self, angle: float) -> bool:
-        if hasattr(self.camera, "set_camera_angle"):
-            return self.camera.set_camera_angle(angle)
-        return False
+    def get_sky_config(self) -> Optional[Dict[str, Any]]:
+        from sky_nav import get_sky_nav
+        return get_sky_nav().get_config()
 
-    def set_sim_drift(self, speed: float, angle: float) -> bool:
-        if hasattr(self.camera, "set_sim_drift"):
-            return self.camera.set_sim_drift(speed, angle)
-        return False
+    def set_sky_config(self, **changes) -> bool:
+        from sky_nav import get_sky_nav
+        return get_sky_nav().set(**changes)
+
+    def search_target(self, query: str) -> Dict[str, Any]:
+        from sky_nav import get_sky_nav
+        return get_sky_nav().search_target(query)
 
     # Camera delegations
     def get_raw_frame(self) -> Optional[np.ndarray]:

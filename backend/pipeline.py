@@ -590,6 +590,11 @@ class AstroPipeline:
         filename = f"cap_{timestamp}.jpg"
         filepath = os.path.join(self.sequence_info["directory"], filename)
         if cv2.imwrite(filepath, frame):
+            try:
+                from sky_nav import write_nav_sidecar
+                write_nav_sidecar(filepath)
+            except Exception:
+                pass
             event_logger.log(f"Manual capture saved: {filename}")
             return {"success": True, "filename": filename}
         return {"success": False, "error": "Failed to write file"}
@@ -622,6 +627,11 @@ class AstroPipeline:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
                     filepath = os.path.join(self.sequence_info["directory"], f"seq_{timestamp}.jpg")
                     if cv2.imwrite(filepath, frame):
+                        try:
+                            from sky_nav import write_nav_sidecar
+                            write_nav_sidecar(filepath)
+                        except Exception:
+                            pass
                         self.sequence_info["count"] += 1
                         self.sequence_info["last_capture_time"] = time.time()
                         event_logger.log(f"Sequence: {self.sequence_info['count']}/{self.sequence_info['total']}")

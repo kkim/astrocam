@@ -32,3 +32,6 @@ captures/
 # Local Config
 backend/config.json
 config.json
+
+# Cached star catalogs
+backend/data/

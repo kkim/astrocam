@@ -49,6 +49,33 @@ interface TrackingStatus {
   sim_camera_angle: number | null;
 }
 
+interface SkyConfig {
+  backend: string;
+  backends: string[];
+  latitude: number;
+  longitude: number;
+  ra: number;
+  dec: number;
+  focal_length_mm: number;
+  pixel_size_um: number;
+  arcsec_per_pixel: number;
+  fov_deg: [number, number];
+  altitude: number;
+  azimuth: number;
+  target: string;
+  drift_px_per_sec: number;
+  history: { name: string; ra: number; dec: number }[];
+  status: { state: string; stars: number; message: string };
+}
+
+interface TargetItem {
+  name: string;
+  alt: string;
+  type: string;
+  ra: number;
+  dec: number;
+}
+
 interface RecordingStatus {
   is_recording: boolean;
   frames: number;
@@ -79,6 +106,7 @@ interface GalleryItem {
   id: string;
   type?: 'sequence' | 'image';
   name?: string;
+  target?: string;
   time?: string;
   date?: string;
   datetime?: string;
@@ -158,6 +186,12 @@ function App() {
   const [motorStatus, setMotorStatus] = useState<MotorStatus>({ duty_cycle: 0, current_duty: 0, voltage: 0, mock_mode: true });
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [prevDuty, setPrevDuty] = useState<number>(85.0);
+  const [sky, setSky] = useState<SkyConfig | null>(null);
+  const [targets, setTargets] = useState<TargetItem[]>([]);
+  const [searchText, setSearchText] = useState('');
+  const [searchMsg, setSearchMsg] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchIsOpen, setSearchIsOpen] = useState(false);
   const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>({
     active: false,
     drift_speed_x: 0,
@@ -319,22 +353,74 @@ function App() {
     (window as any).motorTimeout = setTimeout(() => setIsAdjustingMotor(false), 2000);
   };
 
-  const updateCameraAngle = (angle: number) => {
-    setTrackingStatus(prev => ({ ...prev, sim_camera_angle: angle }));
-    fetch(`${API_BASE}/mock/camera_angle`, {
+  const loadSky = () =>
+    fetch(`${API_BASE}/mock/sky`).then(r => r.json()).then(d => {
+      if (d.success) setSky(d);
+    }).catch(e => console.error("Error loading sky:", e));
+
+  useEffect(() => {
+    loadSky();
+    fetch(`${API_BASE}/mock/sky/targets`)
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setTargets(data); })
+      .catch(e => console.error("Error loading targets:", e));
+    // Poll while the catalog is loading so the status line updates
+    const id = setInterval(() => { if (sky?.status?.state === 'loading') loadSky(); }, 1500);
+    return () => clearInterval(id);
+  }, [sky?.status?.state]);
+
+  // Az/Alt change continuously as the sky rotates, so refresh them periodically
+  useEffect(() => {
+    const id = setInterval(loadSky, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const searchSky = (text: string = searchText) => {
+    const query = text.trim();
+    if (!query || searching) return;
+    // 1. Check recent history (instant, offline)
+    const knownHistory = sky?.history.find(h => h.name.toLowerCase() === query.toLowerCase());
+    if (knownHistory) {
+      setSearchText('');
+      setSearchMsg(`Pointing at ${knownHistory.name}`);
+      applySky({ ra: knownHistory.ra, dec: knownHistory.dec, target: knownHistory.name });
+      return;
+    }
+    // 2. Check local catalog of ~250 Messier & named stars (instant, offline)
+    const knownTarget = targets.find(t => 
+      t.name.toLowerCase() === query.toLowerCase() || 
+      (t.alt && t.alt.toLowerCase() === query.toLowerCase())
+    );
+    if (knownTarget) {
+      setSearchText('');
+      const displayName = knownTarget.alt ? `${knownTarget.name} (${knownTarget.alt})` : knownTarget.name;
+      setSearchMsg(`Pointing at ${displayName}`);
+      applySky({ ra: knownTarget.ra, dec: knownTarget.dec, target: displayName });
+      return;
+    }
+    // 3. Fallback to SIMBAD query
+    setSearching(true);
+    setSearchMsg('');
+    fetch(`${API_BASE}/mock/sky/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ angle })
-    }).catch(e => console.error("Error setting camera angle:", e));
+      body: JSON.stringify({ query })
+    }).then(r => r.json()).then(d => {
+      if (d.sky) setSky(d.sky);
+      if (d.success) { setSearchText(''); setSearchMsg(`Pointing at ${d.name}`); }
+      else setSearchMsg(d.error || 'Search failed');
+    }).catch(() => setSearchMsg('Search failed (backend unreachable)'))
+      .finally(() => setSearching(false));
   };
 
-  const updateSimDrift = (speed: number, angle: number) => {
-    setTrackingStatus(prev => ({ ...prev, sim_drift_speed: speed, sim_drift_angle: angle }));
-    fetch(`${API_BASE}/mock/sim_drift`, {
+  const applySky = (changes: Partial<SkyConfig>) => {
+    // Only the edited fields are sent; values are persisted server-side in config.json
+    setSky(prev => prev ? { ...prev, ...changes, status: { ...prev.status, state: 'loading', message: 'Loading...' } } : prev);
+    fetch(`${API_BASE}/mock/sky`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ speed, angle })
-    }).catch(e => console.error("Error setting sim drift:", e));
+      body: JSON.stringify(changes)
+    }).then(r => r.json()).then(d => setSky(d)).catch(e => console.error("Error setting sky:", e));
   };
 
   const showToast = (msg: string, durationMs: number = 2500) => {
@@ -586,6 +672,11 @@ function App() {
               <span>Stack: 1x (Raw)</span>
             )}
             <span>Luminance: {(health.mean_brightness || 0).toFixed(1)}</span>
+            {sky && (
+              <span title="Azimuth from north / altitude above the horizon">
+                Az {sky.azimuth.toFixed(1)}° · Alt {sky.altitude.toFixed(1)}°
+              </span>
+            )}
           </div>
         </div>
 
@@ -652,6 +743,11 @@ function App() {
                       )}
 
                       <div className="capture-label">
+                        {item.target && (
+                          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: '11px', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            ✨ {item.target}
+                          </div>
+                        )}
                         <div className="capture-time-row">
                           <span className="capture-time">{item.time || item.id}</span>
                           {item.format && <span className="capture-fmt-tag">{item.format.toUpperCase()}</span>}
@@ -691,46 +787,212 @@ function App() {
             </div>
           </div>
 
-          {cameraEngine === 'mock' && mountEngine === 'mock' && (
-            <div className="control-section" style={{ marginTop: '-12px' }}>
-              <div className="tracking-telemetry" style={{ marginTop: '0px', background: 'rgba(88, 166, 255, 0.05)', borderColor: 'rgba(88, 166, 255, 0.15)' }}>
-                {trackingStatus.sim_drift_speed != null && (
-                  <div className="control-group" style={{ marginBottom: '8px' }}>
-                    <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
-                      <span>Sim Drift Speed:</span>
-                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{(trackingStatus.sim_drift_speed ?? 0).toFixed(1)} px/s</span>
-                    </label>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="100" 
-                      step="0.5" 
-                      value={trackingStatus.sim_drift_speed ?? 0} 
-                      onChange={e => updateSimDrift(parseFloat(e.target.value), trackingStatus.sim_drift_angle || 0)}
-                      style={{ marginTop: '4px' }}
-                    />
-                  </div>
-                )}
-                {trackingStatus.sim_camera_angle != null && (
-                  <div className="control-group" style={{ marginBottom: '0px' }}>
-                    <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
-                      <span>Diurnal Rot Angle (Camera PA):</span>
-                      <span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--text-primary)' }}>{(trackingStatus.sim_camera_angle ?? 0).toFixed(0)}°</span>
-                    </label>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="359" 
-                      step="1" 
-                      value={trackingStatus.sim_camera_angle ?? 0} 
-                      onChange={e => updateCameraAngle(parseInt(e.target.value))}
-                      style={{ marginTop: '4px' }}
-                    />
+          <div className="control-section" style={{ marginTop: '-12px' }}>
+            <div className="section-header"><Compass size={16} /> Navigation & Targets</div>
+            <div className="tracking-telemetry" style={{ marginTop: '0px', background: 'rgba(88, 166, 255, 0.05)', borderColor: 'rgba(88, 166, 255, 0.15)' }}>
+              {sky && (
+                <div style={{ marginTop: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
+                  <div style={{ position: 'relative', marginBottom: '4px' }}>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <input
+                          type="text"
+                          placeholder={sky.history.length ? 'Find object or pick recent...' : 'Find object (Polaris, M31...)'}
+                          value={searchText}
+                          onFocus={() => setSearchIsOpen(true)}
+                          onChange={e => {
+                            setSearchText(e.target.value);
+                            setSearchIsOpen(true);
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              setSearchIsOpen(false);
+                              searchSky();
+                            } else if (e.key === 'Escape') {
+                              setSearchIsOpen(false);
+                            }
+                          }}
+                          style={{ flex: 1, minWidth: 0, fontSize: '11px' }}
+                        />
+                        <button
+                          onClick={() => {
+                            setSearchIsOpen(false);
+                            searchSky();
+                          }}
+                          disabled={searching || !searchText.trim()}
+                          style={{ fontSize: '11px' }}
+                        >
+                          {searching ? '...' : 'Go'}
+                        </button>
+                      </div>
+
+                      {searchIsOpen && (
+                        <>
+                          <div
+                            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 998 }}
+                            onClick={() => setSearchIsOpen(false)}
+                          />
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: '100%',
+                              left: 0,
+                              right: 0,
+                              marginTop: '2px',
+                              maxHeight: '180px',
+                              overflowY: 'auto',
+                              background: 'var(--bg-panel)',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: '4px',
+                              zIndex: 999,
+                              boxShadow: '0 4px 12px rgba(0,0,0,0.5)'
+                            }}
+                          >
+                            {/* Filter suggestions */}
+                            {(() => {
+                              const q = searchText.trim().toLowerCase();
+                              const matchedHistory = sky.history.filter(h => !q || h.name.toLowerCase().includes(q));
+                              const matchedTargets = targets.filter(t => 
+                                !q || t.name.toLowerCase().includes(q) || (t.alt && t.alt.toLowerCase().includes(q))
+                              ).slice(0, 30); // show top 30 matches
+
+                              if (matchedHistory.length === 0 && matchedTargets.length === 0) {
+                                return (
+                                  <div style={{ padding: '6px 8px', color: 'var(--text-muted)', fontSize: '11px' }}>
+                                    No matches found. Press 'Go' to search SIMBAD.
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <>
+                                  {matchedHistory.length > 0 && (
+                                    <div>
+                                      <div style={{ padding: '3px 8px', fontSize: '9px', fontWeight: 600, color: 'var(--text-muted)', background: 'rgba(255,255,255,0.03)' }}>
+                                        RECENT
+                                      </div>
+                                      {matchedHistory.map(h => (
+                                        <div
+                                          key={`h-${h.name}`}
+                                          onClick={() => {
+                                            setSearchIsOpen(false);
+                                            setSearchText('');
+                                            setSearchMsg(`Pointing at ${h.name}`);
+                                            applySky({ ra: h.ra, dec: h.dec, target: h.name });
+                                          }}
+                                          style={{
+                                            padding: '4px 8px',
+                                            cursor: 'pointer',
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            alignItems: 'center',
+                                            fontSize: '11px',
+                                            borderBottom: '1px solid rgba(255,255,255,0.03)'
+                                          }}
+                                          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(88, 166, 255, 0.15)')}
+                                          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                                        >
+                                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{h.name}</span>
+                                          <span style={{ fontSize: '9px', color: 'var(--text-muted)' }}>🕒 recent</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {matchedTargets.length > 0 && (
+                                    <div>
+                                      {matchedHistory.length > 0 && (
+                                        <div style={{ padding: '3px 8px', fontSize: '9px', fontWeight: 600, color: 'var(--text-muted)', background: 'rgba(255,255,255,0.03)' }}>
+                                          CATALOG
+                                        </div>
+                                      )}
+                                      {matchedTargets.map(t => {
+                                        const label = t.alt ? `${t.name} (${t.alt})` : t.name;
+                                        return (
+                                          <div
+                                            key={`t-${t.name}`}
+                                            onClick={() => {
+                                              setSearchIsOpen(false);
+                                              setSearchText('');
+                                              setSearchMsg(`Pointing at ${label}`);
+                                              applySky({ ra: t.ra, dec: t.dec, target: label });
+                                            }}
+                                            style={{
+                                              padding: '4px 8px',
+                                              cursor: 'pointer',
+                                              display: 'flex',
+                                              justifyContent: 'space-between',
+                                              alignItems: 'center',
+                                              fontSize: '11px',
+                                              borderBottom: '1px solid rgba(255,255,255,0.03)'
+                                            }}
+                                            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(88, 166, 255, 0.15)')}
+                                            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                                          >
+                                            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{t.name}</span>
+                                            <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                                              {t.alt ? t.alt : t.type}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div style={{ marginBottom: '8px', minHeight: '14px', color: searchMsg.startsWith('Could') || searchMsg.startsWith('Search') ? 'var(--danger, #f85149)' : undefined }}>
+                      {searchMsg || (sky.target ? `Target: ${sky.target}` : '')}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span>Star Catalog:</span>
+                      <select
+                        value={sky.backend}
+                        onChange={e => applySky({ backend: e.target.value })}
+                        style={{ fontSize: '11px' }}
+                      >
+                        {sky.backends.map(b => <option key={b} value={b}>{b}</option>)}
+                      </select>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 8px' }}>
+                      {([
+                        ['latitude', 'Lat (°)'],
+                        ['longitude', 'Lon (°)'],
+                        ['ra', 'RA (°)'],
+                        ['dec', 'Dec (°)'],
+                        ['focal_length_mm', 'Focal (mm)'],
+                        ['pixel_size_um', 'Pixel (µm)'],
+                      ] as [keyof SkyConfig, string][]).map(([key, label]) => (
+                        <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          {label}
+                          <input
+                            type="number"
+                            step="any"
+                            key={`${key}-${sky[key]}`}
+                            defaultValue={sky[key] as number}
+                            onBlur={e => {
+                              const v = parseFloat(e.target.value);
+                              if (!isNaN(v) && v !== sky[key]) applySky({ [key]: v } as Partial<SkyConfig>);
+                            }}
+                            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                            style={{ width: '100%', fontFamily: 'monospace', fontSize: '11px' }}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: '8px' }}>
+                      {sky.arcsec_per_pixel.toFixed(2)}″/px · FOV {sky.fov_deg[0].toFixed(2)}° × {sky.fov_deg[1].toFixed(2)}° · drift {sky.drift_px_per_sec.toFixed(1)} px/s
+                    </div>
+                    <div style={{ marginTop: '2px', color: sky.status.state === 'error' ? 'var(--danger, #f85149)' : undefined }}>
+                      {sky.status.message}
+                    </div>
                   </div>
                 )}
               </div>
             </div>
-          )}
 
           <div className="control-section">
             <div className="section-header"><Zap size={16} /> Mount</div>

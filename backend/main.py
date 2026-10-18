@@ -88,12 +88,24 @@ def list_captures():
         # Mosaic availability info
         mosaic_info = get_session_mosaic_info(s_dir, s_name)
 
+        # Nav info (target / coordinates)
+        target_name = ""
+        session_nav_file = os.path.join(s_dir, "nav.json")
+        if os.path.exists(session_nav_file):
+            try:
+                with open(session_nav_file, "r") as f:
+                    s_nav = json.load(f)
+                    target_name = s_nav.get("target", "")
+            except Exception:
+                pass
+
         thumb_exists = os.path.exists(thumb_path)
         thumb_url = f"/captures/thumbnails/{s_name}.jpg" if thumb_exists else f"/captures/{s_name}/{first_frame}"
         items.append({
             "id": s_name,
             "type": "sequence",
             "name": s_name,
+            "target": target_name,
             "time": time_str,
             "date": date_str,
             "datetime": dt_str,
@@ -113,17 +125,29 @@ def list_captures():
     # 2. Standalone captures (e.g. panorama_*.jpg, seq_*.jpg, etc.)
     for filepath in glob.glob(os.path.join(base_dir, "*.*")):
         filename = os.path.basename(filepath)
-        if filename.startswith(".") or filename.endswith(".tmp"):
+        if filename.startswith(".") or filename.endswith(".tmp") or filename.endswith(".json"):
             continue
         if not filename.lower().endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff")):
             continue
         mtime = os.path.getmtime(filepath)
         dt = datetime.fromtimestamp(mtime)
         fmt = filename.rsplit(".", 1)[-1].lower()
+
+        target_name = ""
+        sidecar_path = filepath + ".nav.json"
+        if os.path.exists(sidecar_path):
+            try:
+                with open(sidecar_path, "r") as f:
+                    c_nav = json.load(f)
+                    target_name = c_nav.get("target", "")
+            except Exception:
+                pass
+
         items.append({
             "id": filename,
             "type": "image",
             "name": filename,
+            "target": target_name,
             "time": dt.strftime("%H:%M:%S"),
             "date": dt.strftime("%Y-%m-%d"),
             "datetime": dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -276,28 +300,48 @@ def set_motor_speed(update: MotorSpeedUpdate):
         event_logger.log(f"Motor speed: {update.speed}%")
     return {"success": success, "speed": update.speed}
 
-class CameraAngleUpdate(BaseModel):
-    angle: float
+class SkyUpdate(BaseModel):
+    backend: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    ra: Optional[float] = None
+    dec: Optional[float] = None
+    focal_length_mm: Optional[float] = None
+    pixel_size_um: Optional[float] = None
+    target: Optional[str] = None
 
-@app.post("/mock/camera_angle")
-def set_mock_camera_angle(update: CameraAngleUpdate):
-    if not rig: return {"success": False, "error": "Rig not initialized"}
-    if hasattr(rig, "set_camera_angle"):
-        success = rig.set_camera_angle(update.angle)
-        return {"success": success, "angle": update.angle}
-    return {"success": False, "error": "Rig does not support setting camera angle"}
+@app.get("/mock/sky")
+def get_mock_sky():
+    from sky_nav import get_sky_nav
+    return {"success": True, **get_sky_nav().get_config()}
 
-class SimDriftUpdate(BaseModel):
-    speed: float
-    angle: float
+@app.post("/mock/sky")
+def set_mock_sky(update: SkyUpdate):
+    from sky_nav import get_sky_nav
+    nav = get_sky_nav()
+    success = nav.set(**update.model_dump())
+    return {"success": success, **nav.get_config()}
 
-@app.post("/mock/sim_drift")
-def set_mock_sim_drift(update: SimDriftUpdate):
-    if not rig: return {"success": False, "error": "Rig not initialized"}
-    if hasattr(rig, "set_sim_drift"):
-        success = rig.set_sim_drift(update.speed, update.angle)
-        return {"success": success, "speed": update.speed, "angle": update.angle}
-    return {"success": False, "error": "Rig does not support setting sim drift"}
+class SkySearch(BaseModel):
+    query: str
+
+@app.post("/mock/sky/search")
+def search_mock_sky(search: SkySearch):
+    from sky_nav import get_sky_nav
+    nav = get_sky_nav()
+    result = nav.search_target(search.query)
+    return {**result, "sky": nav.get_config()}
+
+@app.get("/mock/sky/targets")
+def get_mock_sky_targets():
+    targets_file = os.path.join(os.path.dirname(__file__), "targets.json")
+    if os.path.exists(targets_file):
+        try:
+            with open(targets_file, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            return []
+    return []
 
 @app.get("/stream")
 async def stream():

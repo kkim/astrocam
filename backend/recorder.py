@@ -91,6 +91,11 @@ class StreamRecorder:
             self.session_name = f"session_{timestamp}"
             self.session_path = os.path.join(self.base_dir, self.session_name)
             os.makedirs(self.session_path, exist_ok=True)
+            try:
+                from sky_nav import write_session_nav
+                write_session_nav(self.session_path)
+            except Exception:
+                pass
 
             self.frames_count = 0
             self.total_raw_frames = 0
