@@ -281,10 +281,10 @@ function App() {
   };
 
   const handleApplyRoi = async () => {
-    const x = Math.max(0, Math.min(1910, Number(roiInputs.x) || 0));
-    const y = Math.max(0, Math.min(1070, Number(roiInputs.y) || 0));
-    const w = Math.max(10, Math.min(1920 - x, Number(roiInputs.w) || 100));
-    const h = Math.max(10, Math.min(1080 - y, Number(roiInputs.h) || 100));
+    const x = Math.max(0, Math.min(1870, Number(roiInputs.x) || 0));
+    const y = Math.max(0, Math.min(1030, Number(roiInputs.y) || 0));
+    const w = Math.max(50, Math.min(1920 - x, Number(roiInputs.w) || 100));
+    const h = Math.max(50, Math.min(1080 - y, Number(roiInputs.h) || 100));
     setRoiInputs({ x, y, w, h });
     const roiArray = [x, y, w, h] as [number, number, number, number];
     setLiveProcessing(prev => ({ ...prev, roi: roiArray }));
@@ -1415,8 +1415,8 @@ function App() {
                     type="number"
                     value={roiInputs.x}
                     min={0}
-                    max={1910}
-                    step={10}
+                    max={1870}
+                    step={50}
                     onChange={e => setRoiInputs({ ...roiInputs, x: parseInt(e.target.value) || 0 })}
                   />
                 </div>
@@ -1426,8 +1426,8 @@ function App() {
                     type="number"
                     value={roiInputs.y}
                     min={0}
-                    max={1070}
-                    step={10}
+                    max={1030}
+                    step={50}
                     onChange={e => setRoiInputs({ ...roiInputs, y: parseInt(e.target.value) || 0 })}
                   />
                 </div>
@@ -1436,9 +1436,9 @@ function App() {
                   <input
                     type="number"
                     value={roiInputs.w}
-                    min={10}
+                    min={50}
                     max={1920}
-                    step={10}
+                    step={50}
                     onChange={e => setRoiInputs({ ...roiInputs, w: parseInt(e.target.value) || 100 })}
                   />
                 </div>
@@ -1447,9 +1447,9 @@ function App() {
                   <input
                     type="number"
                     value={roiInputs.h}
-                    min={10}
+                    min={50}
                     max={1080}
-                    step={10}
+                    step={50}
                     onChange={e => setRoiInputs({ ...roiInputs, h: parseInt(e.target.value) || 100 })}
                   />
                 </div>
