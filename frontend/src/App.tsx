@@ -250,6 +250,7 @@ function App() {
     stride: 4
   });
   const [roiInputs, setRoiInputs] = useState({ x: 0, y: 0, w: 1920, h: 1080 });
+  const [showRoiBox, setShowRoiBox] = useState(true);
 
   const handleToggleProcessing = async (stage: 'histogram' | 'corrupted_filter' | 'luminance_check') => {
     const newVal = !liveProcessing[stage];
@@ -903,6 +904,73 @@ function App() {
 
         <div className="stream-container">
           <img src={`${API_BASE}/stream`} alt="Live Stream" className="video-preview" />
+          
+          {/* ROI Bounding Box Overlay */}
+          {(() => {
+            if (!showRoiBox || !liveProcessing.histogram) return null;
+            const fw = health.width || 1920;
+            const fh = health.height || 1080;
+            const activeRoi = liveProcessing.roi || [0, 0, fw, fh];
+            const isEditing = (
+              roiInputs.x !== activeRoi[0] ||
+              roiInputs.y !== activeRoi[1] ||
+              roiInputs.w !== activeRoi[2] ||
+              roiInputs.h !== activeRoi[3]
+            );
+            const hasActiveCustomRoi = (
+              activeRoi[0] > 0 || activeRoi[1] > 0 || activeRoi[2] < fw || activeRoi[3] < fh
+            );
+            const hasPreviewCustomRoi = (
+              roiInputs.x > 0 || roiInputs.y > 0 || roiInputs.w < fw || roiInputs.h < fh
+            );
+
+            return (
+              <>
+                {/* Proposed / Preview ROI box while editing */}
+                {isEditing && hasPreviewCustomRoi && (
+                  <div
+                    className="roi-bounding-box preview"
+                    style={{
+                      left: `${(roiInputs.x / fw) * 100}%`,
+                      top: `${(roiInputs.y / fh) * 100}%`,
+                      width: `${(roiInputs.w / fw) * 100}%`,
+                      height: `${(roiInputs.h / fh) * 100}%`,
+                    }}
+                  >
+                    <div className="roi-corner tl" />
+                    <div className="roi-corner tr" />
+                    <div className="roi-corner bl" />
+                    <div className="roi-corner br" />
+                    <span className="roi-bounding-box-label">
+                      PREVIEW ROI: {roiInputs.w}x{roiInputs.h} ({roiInputs.x}, {roiInputs.y})
+                    </span>
+                  </div>
+                )}
+
+                {/* Active applied ROI box */}
+                {hasActiveCustomRoi && (
+                  <div
+                    className="roi-bounding-box"
+                    style={{
+                      left: `${(activeRoi[0] / fw) * 100}%`,
+                      top: `${(activeRoi[1] / fh) * 100}%`,
+                      width: `${(activeRoi[2] / fw) * 100}%`,
+                      height: `${(activeRoi[3] / fh) * 100}%`,
+                    }}
+                  >
+                    <div className="roi-corner tl" />
+                    <div className="roi-corner tr" />
+                    <div className="roi-corner bl" />
+                    <div className="roi-corner br" />
+                    <span className="roi-bounding-box-label">
+                      ROI: {activeRoi[2]}x{activeRoi[3]} ({activeRoi[0]}, {activeRoi[1]})
+                    </span>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+
           <div className="stream-overlay">
             <span>{health.width || 0}x{health.height || 0} @ {(health.fps || 0).toFixed(1)} FPS • {health.camera_format || cameraFormat}</span>
             {accumulationCount > 1 ? (
@@ -1460,6 +1528,14 @@ function App() {
                 </button>
                 <button type="button" onClick={handleResetRoi} title="Reset to Full Frame 1920x1080">
                   Full Frame
+                </button>
+                <button
+                  type="button"
+                  className={showRoiBox ? 'active' : ''}
+                  onClick={() => setShowRoiBox(prev => !prev)}
+                  title="Toggle ROI Bounding Box overlay on stream"
+                >
+                  Box: {showRoiBox ? 'ON' : 'OFF'}
                 </button>
               </div>
             </div>

@@ -158,6 +158,64 @@ body, html, #root {
   display: block;
 }
 
+/* ROI Bounding Box Overlay */
+.roi-bounding-box {
+  position: absolute;
+  border: 2px solid #58a6ff;
+  background: rgba(88, 166, 255, 0.08);
+  box-shadow: 0 0 8px rgba(88, 166, 255, 0.4), inset 0 0 6px rgba(88, 166, 255, 0.15);
+  pointer-events: none;
+  z-index: 6;
+  box-sizing: border-box;
+  transition: all 0.12s ease-out;
+}
+
+.roi-bounding-box.preview {
+  border: 2px dashed #f0883e;
+  background: rgba(240, 136, 62, 0.08);
+  box-shadow: 0 0 8px rgba(240, 136, 62, 0.4), inset 0 0 6px rgba(240, 136, 62, 0.15);
+}
+
+.roi-bounding-box-label {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  background: rgba(13, 17, 23, 0.88);
+  color: #58a6ff;
+  border: 1px solid rgba(88, 166, 255, 0.5);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  font-family: monospace;
+  pointer-events: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.roi-bounding-box.preview .roi-bounding-box-label {
+  color: #f0883e;
+  border-color: rgba(240, 136, 62, 0.6);
+}
+
+.roi-corner {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-color: #58a6ff;
+  border-style: solid;
+  pointer-events: none;
+}
+.roi-corner.tl { top: -2px; left: -2px; border-width: 2px 0 0 2px; }
+.roi-corner.tr { top: -2px; right: -2px; border-width: 2px 2px 0 0; }
+.roi-corner.bl { bottom: -2px; left: -2px; border-width: 0 0 2px 2px; }
+.roi-corner.br { bottom: -2px; right: -2px; border-width: 0 2px 2px 0; }
+
+.roi-bounding-box.preview .roi-corner {
+  border-color: #f0883e;
+}
+
 .roi-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
