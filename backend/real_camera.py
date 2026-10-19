@@ -159,7 +159,7 @@ class RealCamera:
                 elif prop == "gamma":
                     val = int(np.clip(value, 100, 500))
                 elif prop == "brightness":
-                    val = int(np.clip(value, -128, 128))
+                    val = int(np.clip(value, -10, 266))
                 else:
                     val = int(value)
                 try:
@@ -281,7 +281,7 @@ class RealCamera:
                 if prop == "gamma":
                     value = float(np.clip(value, 100, 500))
                 elif prop == "brightness":
-                    value = float(np.clip(value, -128, 128))
+                    value = float(np.clip(value, -10, 266))
                 self.params[prop] = value
                 cv_prop, v4l_name = ctrl_map[prop]
                 val = 1 if prop in ("auto_wb", "white_balance_automatic") and value > 0 else int(value)

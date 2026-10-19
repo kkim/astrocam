@@ -158,6 +158,35 @@ body, html, #root {
   display: block;
 }
 
+.roi-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.roi-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.roi-field span {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.roi-field input {
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
 /* Layout Grid */
 .layout-grid {
   display: grid;

@@ -464,7 +464,7 @@ class MockCamera:
                     frame[fy - pr : fy + pr + 1, fx - pr : fx + pr + 1], scaled
                 )
 
-        # 2. Brightness (black level offset, range -64 to 64)
+        # 2. Brightness (black level offset, range -10 to 266)
         brightness_val = float(self.params.get("brightness", 0))
         if brightness_val != 0:
             diff = int(brightness_val * 1.5)

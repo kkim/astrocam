@@ -13,7 +13,7 @@ from panorama import PanoramaManager
 from pipeline import AstroPipeline
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import glob
 import json
 import subprocess
@@ -441,6 +441,7 @@ def get_status():
     status["recording"] = pipeline.get_recording_status()
     status["corrupted_frames_dropped"] = getattr(pipeline, "corrupted_frames_dropped", 0)
     status["histogram"] = pipeline.get_histogram() if hasattr(pipeline, "get_histogram") else []
+    status["processing"] = pipeline.get_processing_config() if hasattr(pipeline, "get_processing_config") else {}
     return status
 
 @app.get("/histogram")
@@ -448,6 +449,27 @@ def get_histogram():
     if not pipeline or not hasattr(pipeline, "get_histogram"):
         return {"histogram": []}
     return {"histogram": pipeline.get_histogram()}
+
+class ProcessingUpdate(BaseModel):
+    histogram: Optional[bool] = None
+    corrupted_filter: Optional[bool] = None
+    luminance_check: Optional[bool] = None
+    roi: Optional[List[int]] = None
+    stride: Optional[int] = None
+
+@app.get("/pipeline/processing")
+def get_pipeline_processing():
+    if not pipeline or not hasattr(pipeline, "get_processing_config"):
+        return {"histogram": True, "corrupted_filter": True, "luminance_check": True, "roi": [0, 0, 1920, 1080], "stride": 4}
+    return pipeline.get_processing_config()
+
+@app.post("/pipeline/processing")
+def set_pipeline_processing(req: ProcessingUpdate):
+    if not pipeline or not hasattr(pipeline, "set_processing_config"):
+        return {"success": False}
+    updates = {k: v for k, v in req.dict().items() if v is not None}
+    pipeline.set_processing_config(updates)
+    return {"success": True, **pipeline.get_processing_config()}
 
 @app.get("/controls")
 def get_controls():

@@ -93,6 +93,14 @@ interface RecordingStatus {
   dropped_frames?: number;
 }
 
+interface ProcessingConfig {
+  histogram: boolean;
+  corrupted_filter: boolean;
+  luminance_check: boolean;
+  roi: [number, number, number, number];
+  stride?: number;
+}
+
 interface MotorStatus {
   duty_cycle?: number;
   current_duty?: number;
@@ -220,6 +228,7 @@ function App() {
     recording?: RecordingStatus;
     corrupted_frames_dropped?: number;
     histogram?: number[];
+    processing?: ProcessingConfig;
   }>({
     connected: true,
     mean_brightness: 0,
@@ -232,6 +241,80 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const logWindowRef = useRef<HTMLDivElement>(null);
   const histCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const [liveProcessing, setLiveProcessing] = useState<ProcessingConfig>({
+    histogram: true,
+    corrupted_filter: true,
+    luminance_check: true,
+    roi: [0, 0, 1920, 1080],
+    stride: 4
+  });
+  const [roiInputs, setRoiInputs] = useState({ x: 0, y: 0, w: 1920, h: 1080 });
+
+  const handleToggleProcessing = async (stage: 'histogram' | 'corrupted_filter' | 'luminance_check') => {
+    const newVal = !liveProcessing[stage];
+    setLiveProcessing(prev => ({ ...prev, [stage]: newVal }));
+    try {
+      await fetch(`${API_BASE}/pipeline/processing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [stage]: newVal })
+      });
+      showToast(`${stage.replace('_', ' ')} ${newVal ? 'ON' : 'OFF'}`);
+    } catch (e: any) {
+      showToast(`Error: ${e.message}`, 4000);
+    }
+  };
+
+  const handleSetStride = async (stride: number) => {
+    setLiveProcessing(prev => ({ ...prev, stride }));
+    try {
+      await fetch(`${API_BASE}/pipeline/processing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stride })
+      });
+      showToast(`Histogram stride set to ${stride}x`);
+    } catch (e: any) {
+      showToast(`Error: ${e.message}`, 4000);
+    }
+  };
+
+  const handleApplyRoi = async () => {
+    const x = Math.max(0, Math.min(1910, Number(roiInputs.x) || 0));
+    const y = Math.max(0, Math.min(1070, Number(roiInputs.y) || 0));
+    const w = Math.max(10, Math.min(1920 - x, Number(roiInputs.w) || 100));
+    const h = Math.max(10, Math.min(1080 - y, Number(roiInputs.h) || 100));
+    setRoiInputs({ x, y, w, h });
+    const roiArray = [x, y, w, h] as [number, number, number, number];
+    setLiveProcessing(prev => ({ ...prev, roi: roiArray }));
+    try {
+      await fetch(`${API_BASE}/pipeline/processing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roi: roiArray })
+      });
+      showToast(`ROI set to ${w}x${h} at (${x}, ${y})`);
+    } catch (e: any) {
+      showToast(`Error: ${e.message}`, 4000);
+    }
+  };
+
+  const handleResetRoi = async () => {
+    const fullRoi = [0, 0, 1920, 1080] as [number, number, number, number];
+    setRoiInputs({ x: 0, y: 0, w: 1920, h: 1080 });
+    setLiveProcessing(prev => ({ ...prev, roi: fullRoi }));
+    try {
+      await fetch(`${API_BASE}/pipeline/processing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roi: fullRoi })
+      });
+      showToast('ROI reset to Full Frame (1920x1080)');
+    } catch (e: any) {
+      showToast(`Error: ${e.message}`, 4000);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -317,6 +400,9 @@ function App() {
           if (hData.mount_mode) setMountEngine(hData.mount_mode);
           if (hData.camera_format) setCameraFormat(hData.camera_format);
           if (hData.recording) setRecordingStatus(hData.recording);
+          if (hData.processing) {
+            setLiveProcessing(hData.processing);
+          }
         }
 
         const cRes = await fetch(`${API_BASE}/controls`);
@@ -838,10 +924,14 @@ function App() {
               </span>
             )}
           </div>
-          <div className="stream-histogram">
-            <span className="stream-histogram-label">HIST (LOG)</span>
-            <canvas ref={histCanvasRef} width={256} height={48} className="stream-histogram-canvas" />
-          </div>
+          {liveProcessing.histogram && (
+            <div className="stream-histogram">
+              <span className="stream-histogram-label">
+                HIST (LOG){liveProcessing.roi && (liveProcessing.roi[2] !== 1920 || liveProcessing.roi[3] !== 1080) ? ` • ROI ${liveProcessing.roi[2]}x${liveProcessing.roi[3]}` : ''} • {liveProcessing.stride || 4}x
+              </span>
+              <canvas ref={histCanvasRef} width={256} height={48} className="stream-histogram-canvas" />
+            </div>
+          )}
         </div>
 
         <div className="layout-grid">
@@ -1284,6 +1374,115 @@ function App() {
           </div>
 
           <div className="control-section">
+            <div className="section-header"><Zap size={16} /> Live Processing Controls</div>
+
+            <div className="control-group">
+              <label>Pipeline Stages</label>
+              <div className="preset-row wrap">
+                <button
+                  type="button"
+                  className={liveProcessing.histogram ? 'active' : ''}
+                  onClick={() => handleToggleProcessing('histogram')}
+                  title="Toggle real-time histogram calculation"
+                >
+                  Histogram: {liveProcessing.histogram ? 'ON' : 'OFF'}
+                </button>
+                <button
+                  type="button"
+                  className={liveProcessing.corrupted_filter ? 'active' : ''}
+                  onClick={() => handleToggleProcessing('corrupted_filter')}
+                  title="Drop corrupted glitch frames due to USB line drop / star peak jump"
+                >
+                  Glitch Filter: {liveProcessing.corrupted_filter ? 'ON' : 'OFF'}
+                </button>
+                <button
+                  type="button"
+                  className={liveProcessing.luminance_check ? 'active' : ''}
+                  onClick={() => handleToggleProcessing('luminance_check')}
+                  title="Full-frame peak luminance and star center detection"
+                >
+                  Luminance: {liveProcessing.luminance_check ? 'ON' : 'OFF'}
+                </button>
+              </div>
+            </div>
+
+            <div className="control-group">
+              <label>Histogram Region of Interest (ROI)</label>
+              <div className="roi-grid">
+                <div className="roi-field">
+                  <span>X (Start):</span>
+                  <input
+                    type="number"
+                    value={roiInputs.x}
+                    min={0}
+                    max={1910}
+                    step={10}
+                    onChange={e => setRoiInputs({ ...roiInputs, x: parseInt(e.target.value) || 0 })}
+                  />
+                </div>
+                <div className="roi-field">
+                  <span>Y (Start):</span>
+                  <input
+                    type="number"
+                    value={roiInputs.y}
+                    min={0}
+                    max={1070}
+                    step={10}
+                    onChange={e => setRoiInputs({ ...roiInputs, y: parseInt(e.target.value) || 0 })}
+                  />
+                </div>
+                <div className="roi-field">
+                  <span>Width (W):</span>
+                  <input
+                    type="number"
+                    value={roiInputs.w}
+                    min={10}
+                    max={1920}
+                    step={10}
+                    onChange={e => setRoiInputs({ ...roiInputs, w: parseInt(e.target.value) || 100 })}
+                  />
+                </div>
+                <div className="roi-field">
+                  <span>Height (H):</span>
+                  <input
+                    type="number"
+                    value={roiInputs.h}
+                    min={10}
+                    max={1080}
+                    step={10}
+                    onChange={e => setRoiInputs({ ...roiInputs, h: parseInt(e.target.value) || 100 })}
+                  />
+                </div>
+              </div>
+              <div className="preset-row">
+                <button type="button" onClick={handleApplyRoi} className="active" title="Apply Region of Interest">
+                  Apply ROI
+                </button>
+                <button type="button" onClick={handleResetRoi} title="Reset to Full Frame 1920x1080">
+                  Full Frame
+                </button>
+              </div>
+            </div>
+
+            <div className="control-group">
+              <label>Histogram Stride (Subsampling)</label>
+              <div className="preset-row">
+                {[1, 2, 4, 8, 16].map(s => (
+                  <button
+                    key={s}
+                    type="button"
+                    className={(liveProcessing.stride || 4) === s ? 'active' : ''}
+                    onClick={() => handleSetStride(s)}
+                    title={`Subsample every ${s} pixel${s > 1 ? 's' : ''}${s === 1 ? ' (Full Resolution)' : s === 4 ? ' (Default)' : ' (Higher FPS)'}`}
+                  >
+                    {s}x
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="control-section">
             <div className="section-header"><RefreshCw size={16} /> Camera Settings</div>
 
             <div className="control-group">
@@ -1345,8 +1544,8 @@ function App() {
                 const timeStr = ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms.toFixed(1)}ms`;
                 labelText = `Exposure: ${value} (~${timeStr})`;
               } else if (key === 'brightness') {
-                minVal = -128;
-                maxVal = 128;
+                minVal = -10;
+                maxVal = 266;
                 const note = value === 0 ? ' (0 = Neutral Black Level Offset)' : (value || 0) < 0 ? ' (Low Offset - Warning: 0-Clipping)' : ' (High Pedestal)';
                 labelText = `Brightness: ${value}${note}`;
               } else if (key === 'gain') {

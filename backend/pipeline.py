@@ -92,6 +92,11 @@ class AstroPipeline:
         self.fps = 0.0
         self.mean_brightness = 0.0
         self.histogram = [0] * 256
+        self.enable_histogram = True
+        self.enable_corrupted_filter = True
+        self.enable_luminance_check = True
+        self.hist_roi = [0, 0, 1920, 1080]
+        self.hist_stride = 4
         self._frame_count = 0
         self._last_fps_calc_time = time.time()
 
@@ -172,42 +177,41 @@ class AstroPipeline:
         completed_count = 0
 
         with self.lock:
-            # 1. Star peak detection & corrupted frame filter:
-            # A 3x3 box blur rejects single hot pixels while locating true star center.
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-            blurred = cv2.blur(gray, (3, 3))
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
-            self.mean_brightness = float(max_val)
+            # 1. Star peak detection & corrupted frame filter (conditional for speed):
+            if self.enable_luminance_check or self.enable_corrupted_filter:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+                blurred = cv2.blur(gray, (3, 3))
+                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
+                if self.enable_luminance_check:
+                    self.mean_brightness = float(max_val)
 
-            # If a distinct star or light source is detected (peak >= 15):
-            # Compare peak location against median of last 10 valid frames.
-            # If peak jumps by > 30px (e.g. USB line-drop / YUYV packet shift), drop the corrupted frame!
-            if max_val >= 15:
-                if len(self.peak_history) >= 3:
-                    med_x = float(np.median([p[0] for p in self.peak_history]))
-                    med_y = float(np.median([p[1] for p in self.peak_history]))
-                    dist = float(np.hypot(max_loc[0] - med_x, max_loc[1] - med_y))
+                # Corrupted frame drop filter
+                if self.enable_corrupted_filter and max_val >= 15:
+                    if len(self.peak_history) >= 3:
+                        med_x = float(np.median([p[0] for p in self.peak_history]))
+                        med_y = float(np.median([p[1] for p in self.peak_history]))
+                        dist = float(np.hypot(max_loc[0] - med_x, max_loc[1] - med_y))
 
-                    if dist > 30.0:
-                        self._consecutive_peak_drops += 1
-                        if self._consecutive_peak_drops < 8:
-                            self.corrupted_frames_dropped += 1
-                            now = time.time()
-                            if now - self._last_corrupt_log_time >= 1.0:
-                                event_logger.log(
-                                    f"Dropped corrupted frame: star peak jumped {dist:.1f}px to {max_loc} "
-                                    f"(median: ({med_x:.0f}, {med_y:.0f}))"
-                                )
-                                self._last_corrupt_log_time = now
-                            return  # Discard frame from accumulation, stream, and disk!
+                        if dist > 30.0:
+                            self._consecutive_peak_drops += 1
+                            if self._consecutive_peak_drops < 8:
+                                self.corrupted_frames_dropped += 1
+                                now = time.time()
+                                if now - self._last_corrupt_log_time >= 1.0:
+                                    event_logger.log(
+                                        f"Dropped corrupted frame: star peak jumped {dist:.1f}px to {max_loc} "
+                                        f"(median: ({med_x:.0f}, {med_y:.0f}))"
+                                    )
+                                    self._last_corrupt_log_time = now
+                                return  # Discard frame from accumulation, stream, and disk!
+                            else:
+                                # Slew or new target acquisition: reset rolling history
+                                self.peak_history.clear()
+                                self._consecutive_peak_drops = 0
                         else:
-                            # Slew or new target acquisition: reset rolling history
-                            self.peak_history.clear()
                             self._consecutive_peak_drops = 0
-                    else:
-                        self._consecutive_peak_drops = 0
 
-                self.peak_history.append(max_loc)
+                    self.peak_history.append(max_loc)
 
             # Continuous Live Block Accumulation (1x = raw, 10x, 25x, 100x)
             if self.accumulation_count <= 1:
@@ -241,9 +245,18 @@ class AstroPipeline:
                     self.acc_buffer = None
                     self.acc_count = 0
 
-            # Calculate 256-bin luminance histogram (bin size = 1) on latest displayed frame
-            if self.latest_frame is not None:
-                sample = self.latest_frame[::4, ::4]
+            # Calculate 256-bin luminance histogram on latest displayed frame or ROI
+            if self.enable_histogram and self.latest_frame is not None:
+                fh, fw = self.latest_frame.shape[:2]
+                rx, ry, rw, rh = self.hist_roi
+                rx = max(0, min(rx, fw - 1))
+                ry = max(0, min(ry, fh - 1))
+                rw = max(1, min(rw, fw - rx))
+                rh = max(1, min(rh, fh - ry))
+                roi = self.latest_frame[ry:ry+rh, rx:rx+rw]
+                stride = max(1, int(self.hist_stride))
+                sample = roi[::stride, ::stride] if stride > 1 else roi
+
                 if sample.ndim == 3:
                     sample_gray = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
                 else:
@@ -300,9 +313,36 @@ class AstroPipeline:
             return jpeg.tobytes() if ret else None
 
     def get_histogram(self):
-        """Returns the current 128-bin luminance histogram."""
+        """Returns the current 256-bin luminance histogram."""
         with self.lock:
             return list(self.histogram)
+
+    def get_processing_config(self):
+        """Returns current live processing stage toggles, histogram ROI, and subsample stride."""
+        with self.lock:
+            return {
+                "histogram": self.enable_histogram,
+                "corrupted_filter": self.enable_corrupted_filter,
+                "luminance_check": self.enable_luminance_check,
+                "roi": list(self.hist_roi),
+                "stride": self.hist_stride
+            }
+
+    def set_processing_config(self, config: dict):
+        """Updates live processing stage toggles, histogram ROI, and/or subsample stride."""
+        with self.lock:
+            if "histogram" in config:
+                self.enable_histogram = bool(config["histogram"])
+            if "corrupted_filter" in config:
+                self.enable_corrupted_filter = bool(config["corrupted_filter"])
+            if "luminance_check" in config:
+                self.enable_luminance_check = bool(config["luminance_check"])
+            if "roi" in config and isinstance(config["roi"], (list, tuple)) and len(config["roi"]) == 4:
+                self.hist_roi = [int(v) for v in config["roi"]]
+            if "stride" in config:
+                self.hist_stride = max(1, min(64, int(config["stride"])))
+        event_logger.log(f"Pipeline processing config updated: {config}")
+        return True
 
     def set_accumulation_count(self, count: int) -> bool:
         """
