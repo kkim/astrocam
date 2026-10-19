@@ -281,23 +281,100 @@ function App() {
     }
   };
 
-  const handleApplyRoi = async () => {
-    const x = Math.max(0, Math.min(1870, Number(roiInputs.x) || 0));
-    const y = Math.max(0, Math.min(1030, Number(roiInputs.y) || 0));
-    const w = Math.max(50, Math.min(1920 - x, Number(roiInputs.w) || 100));
-    const h = Math.max(50, Math.min(1080 - y, Number(roiInputs.h) || 100));
-    setRoiInputs({ x, y, w, h });
-    const roiArray = [x, y, w, h] as [number, number, number, number];
-    setLiveProcessing(prev => ({ ...prev, roi: roiArray }));
+  const applyRoiCoords = async (rawX: number, rawY: number, rawW: number, rawH: number) => {
+    const rx = Math.max(0, Math.min(1870, Math.round(rawX / 50) * 50));
+    const ry = Math.max(0, Math.min(1030, Math.round(rawY / 50) * 50));
+    const rw = Math.max(50, Math.min(1920 - rx, Math.round(rawW / 50) * 50));
+    const rh = Math.max(50, Math.min(1080 - ry, Math.round(rawH / 50) * 50));
+    setRoiInputs({ x: rx, y: ry, w: rw, h: rh });
+    const roiArray = [rx, ry, rw, rh] as [number, number, number, number];
+    setLiveProcessing(prev => ({ ...prev, roi: roiArray, histogram: true }));
     try {
       await fetch(`${API_BASE}/pipeline/processing`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roi: roiArray })
+        body: JSON.stringify({ roi: roiArray, histogram: true })
       });
-      showToast(`ROI set to ${w}x${h} at (${x}, ${y})`);
+      showToast(`ROI set to ${rw}x${rh} at (${rx}, ${ry})`);
     } catch (e: any) {
       showToast(`Error: ${e.message}`, 4000);
+    }
+  };
+
+  const handleApplyRoi = async () => {
+    await applyRoiCoords(roiInputs.x, roiInputs.y, roiInputs.w, roiInputs.h);
+  };
+
+  const isDraggingRoiRef = useRef(false);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  const handlePointerDownStream = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('button, input, select, textarea')) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const fw = health.width || 1920;
+    const fh = health.height || 1080;
+    const clickX = Math.max(0, Math.min(fw, ((e.clientX - rect.left) / rect.width) * fw));
+    const clickY = Math.max(0, Math.min(fh, ((e.clientY - rect.top) / rect.height) * fh));
+
+    dragStartRef.current = { x: clickX, y: clickY };
+    isDraggingRoiRef.current = true;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch (_) {}
+  };
+
+  const handlePointerMoveStream = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRoiRef.current || !dragStartRef.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const fw = health.width || 1920;
+    const fh = health.height || 1080;
+    const curX = Math.max(0, Math.min(fw, ((e.clientX - rect.left) / rect.width) * fw));
+    const curY = Math.max(0, Math.min(fh, ((e.clientY - rect.top) / rect.height) * fh));
+
+    const start = dragStartRef.current;
+    const minX = Math.min(start.x, curX);
+    const minY = Math.min(start.y, curY);
+    const width = Math.abs(curX - start.x);
+    const height = Math.abs(curY - start.y);
+
+    const snapX = Math.round(minX / 50) * 50;
+    const snapY = Math.round(minY / 50) * 50;
+    const snapW = Math.max(50, Math.round(width / 50) * 50);
+    const snapH = Math.max(50, Math.round(height / 50) * 50);
+
+    setRoiInputs({
+      x: Math.min(fw - 50, snapX),
+      y: Math.min(fh - 50, snapY),
+      w: Math.min(fw - snapX, snapW),
+      h: Math.min(fh - snapY, snapH)
+    });
+  };
+
+  const handlePointerUpStream = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRoiRef.current || !dragStartRef.current) return;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch (_) {}
+
+    const start = dragStartRef.current;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const fw = health.width || 1920;
+    const fh = health.height || 1080;
+    const endX = Math.max(0, Math.min(fw, ((e.clientX - rect.left) / rect.width) * fw));
+    const endY = Math.max(0, Math.min(fh, ((e.clientY - rect.top) / rect.height) * fh));
+
+    isDraggingRoiRef.current = false;
+    dragStartRef.current = null;
+
+    const dragDist = Math.hypot(endX - start.x, endY - start.y);
+    if (dragDist > 25) {
+      const minX = Math.min(start.x, endX);
+      const minY = Math.min(start.y, endY);
+      const width = Math.abs(endX - start.x);
+      const height = Math.abs(endY - start.y);
+      applyRoiCoords(minX, minY, width, height);
     }
   };
 
@@ -902,7 +979,14 @@ function App() {
           </div>
         </header>
 
-        <div className="stream-container">
+        <div 
+          className="stream-container"
+          onPointerDown={handlePointerDownStream}
+          onPointerMove={handlePointerMoveStream}
+          onPointerUp={handlePointerUpStream}
+          onPointerCancel={handlePointerUpStream}
+          title="Drag on stream to select Region of Interest (ROI)"
+        >
           <img src={`${API_BASE}/stream`} alt="Live Stream" className="video-preview" />
           
           {/* ROI Bounding Box Overlay */}
