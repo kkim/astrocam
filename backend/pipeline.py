@@ -3,8 +3,10 @@ import numpy as np
 import time
 import threading
 import os
+import json
 import collections
 from datetime import datetime
+from typing import Optional, List, Tuple, Dict, Any
 from logger import event_logger
 from alignment_utils import align_images, detect_stars
 from recorder import StreamRecorder
@@ -100,6 +102,29 @@ class AstroPipeline:
         self._frame_count = 0
         self._last_fps_calc_time = time.time()
 
+        # Restore saved pipeline and camera settings from config.json
+        cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r") as f:
+                    cfg_json = json.load(f)
+                    p_cfg = cfg_json.get("pipeline_settings", {})
+                    if "histogram" in p_cfg:
+                        self.enable_histogram = bool(p_cfg["histogram"])
+                    if "corrupted_filter" in p_cfg:
+                        self.enable_corrupted_filter = bool(p_cfg["corrupted_filter"])
+                    if "luminance_check" in p_cfg:
+                        self.enable_luminance_check = bool(p_cfg["luminance_check"])
+                    if "roi" in p_cfg and len(p_cfg["roi"]) == 4:
+                        self.hist_roi = [int(v) for v in p_cfg["roi"]]
+                    if "stride" in p_cfg:
+                        self.hist_stride = max(1, min(64, int(p_cfg["stride"])))
+                    c_cfg = cfg_json.get("camera_settings", {})
+                    if "accumulation_count" in c_cfg:
+                        self.accumulation_count = max(1, int(c_cfg["accumulation_count"]))
+            except Exception:
+                pass
+
         # Star Peak Tracking & Corrupted Frame Filter
         self.peak_history = collections.deque(maxlen=10)
         self.corrupted_frames_dropped = 0
@@ -140,6 +165,14 @@ class AstroPipeline:
         # Dedicated stream recorder
         self.recorder = StreamRecorder()
 
+        # Black Calibration & Defect Mask State
+        self.is_calibrating = False
+        self.calib_target_frames = 15
+        self._calib_frames: List[np.ndarray] = []
+        self.defect_mask: Optional[np.ndarray] = None
+        self.calibration_meta: Optional[Dict[str, Any]] = None
+        self._load_existing_calibration()
+
         # Start background processing thread
         self.thread = threading.Thread(target=self._processing_loop, daemon=True)
         self.thread.start()
@@ -177,6 +210,12 @@ class AstroPipeline:
         completed_count = 0
 
         with self.lock:
+            # Handle Black Calibration collection if active
+            if self.is_calibrating:
+                self._calib_frames.append(frame.copy())
+                if len(self._calib_frames) >= self.calib_target_frames:
+                    self._finalize_black_calibration()
+
             # 1. Star peak detection & corrupted frame filter (conditional for speed):
             if self.enable_luminance_check or self.enable_corrupted_filter:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
@@ -244,6 +283,15 @@ class AstroPipeline:
 
                     self.acc_buffer = None
                     self.acc_count = 0
+
+            # Live display defect softening (visualization ONLY - acc_buffer and saved TIFFs remain 100% pure raw)
+            if self.defect_mask is not None and self.latest_frame is not None:
+                fh, fw = self.latest_frame.shape[:2]
+                if self.defect_mask.shape == (fh, fw):
+                    disp_frame = self.latest_frame.copy()
+                    blurred_disp = cv2.medianBlur(disp_frame, 3)
+                    disp_frame[self.defect_mask > 0] = blurred_disp[self.defect_mask > 0]
+                    self.latest_frame = disp_frame
 
             # Calculate 256-bin luminance histogram on latest displayed frame or ROI
             if self.enable_histogram and self.latest_frame is not None:
@@ -363,6 +411,134 @@ class AstroPipeline:
         with self.lock:
             self.acc_buffer = None
             self.acc_count = 0
+
+    def _load_existing_calibration(self):
+        """Loads persistent defect mask and calibration metadata from disk if available."""
+        try:
+            calib_dir = os.path.join(self.recorder.base_dir, "calibration")
+            mask_path = os.path.join(calib_dir, "defect_mask.npy")
+            meta_path = os.path.join(calib_dir, "calibration_meta.json")
+            if os.path.exists(mask_path):
+                self.defect_mask = np.load(mask_path)
+                if os.path.exists(meta_path):
+                    with open(meta_path, "r") as f:
+                        self.calibration_meta = json.load(f)
+                count = int(np.sum(self.defect_mask > 0)) if self.defect_mask is not None else 0
+                event_logger.log(f"Loaded existing black calibration: {count} defective pixels.")
+        except Exception as e:
+            event_logger.log(f"Error loading black calibration: {e}")
+
+    def start_black_calibration(self, target_frames: int = 15) -> Dict[str, Any]:
+        """
+        Starts collecting incoming dark frames to compute a master dark and defect pixel map.
+        
+        Args:
+            target_frames: Number of dark frames to collect and average (default 15).
+        """
+        with self.lock:
+            self.is_calibrating = True
+            self.calib_target_frames = max(3, min(60, int(target_frames)))
+            self._calib_frames.clear()
+            event_logger.log(f"Black calibration started ({self.calib_target_frames} frames).")
+            return {
+                "success": True,
+                "status": "calibrating",
+                "target_frames": self.calib_target_frames,
+                "frames_collected": 0
+            }
+
+    def _finalize_black_calibration(self):
+        """
+        Processes collected dark frames into a master dark and hot-pixel/cluster defect map.
+        Calculates background pedestal statistics (median and MAD-based sigma).
+        Detects both isolated hot pixels and multi-pixel clusters.
+        Saves calibration to disk for use in live preview softening and mosaic inverse-weighting.
+        """
+        if not self._calib_frames:
+            self.is_calibrating = False
+            return
+
+        frames = np.array(self._calib_frames, dtype=np.float32)
+        master_dark = np.mean(frames, axis=0)
+
+        # Convert to grayscale luminance for defect detection
+        if master_dark.ndim == 3:
+            dark_gray = cv2.cvtColor(master_dark.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        else:
+            dark_gray = master_dark.copy()
+
+        # Robust background estimation
+        med = float(np.median(dark_gray))
+        mad = float(np.median(np.abs(dark_gray - med)))
+        sigma = max(1.0, 1.4826 * mad)
+
+        # Detect hot pixels & clusters: threshold at least 5*sigma above median, with min 6 ADU headroom
+        threshold = max(med + 6.0, med + 5.0 * sigma)
+        defect_mask = (dark_gray > threshold).astype(np.uint8)
+
+        # Count individual defect pixels
+        defect_count = int(np.sum(defect_mask))
+
+        meta = {
+            "timestamp": datetime.now().isoformat(),
+            "frames_collected": len(self._calib_frames),
+            "defect_pixel_count": defect_count,
+            "median_bg": round(med, 2),
+            "sigma_bg": round(sigma, 2),
+            "threshold": round(threshold, 2),
+        }
+
+        calib_dir = os.path.join(self.recorder.base_dir, "calibration")
+        os.makedirs(calib_dir, exist_ok=True)
+
+        try:
+            np.save(os.path.join(calib_dir, "defect_mask.npy"), defect_mask)
+            np.save(os.path.join(calib_dir, "master_dark.npy"), master_dark)
+            with open(os.path.join(calib_dir, "calibration_meta.json"), "w") as f:
+                json.dump(meta, f, indent=2)
+        except Exception as e:
+            event_logger.log(f"Failed to save black calibration: {e}")
+
+        self.defect_mask = defect_mask
+        self.calibration_meta = meta
+        self.is_calibrating = False
+        self._calib_frames.clear()
+
+        event_logger.log(
+            f"Black calibration complete: {defect_count} defective/hot pixels mapped "
+            f"(bg={med:.1f}, sigma={sigma:.2f}, threshold={threshold:.1f})."
+        )
+
+    def get_calibration_status(self) -> Dict[str, Any]:
+        """Returns the current black calibration status and metadata."""
+        with self.lock:
+            return {
+                "is_calibrating": self.is_calibrating,
+                "frames_collected": len(self._calib_frames),
+                "target_frames": self.calib_target_frames,
+                "calibrated": self.defect_mask is not None,
+                "meta": self.calibration_meta
+            }
+
+    def clear_black_calibration(self) -> Dict[str, Any]:
+        """Clears active black calibration and removes calibration files from disk."""
+        with self.lock:
+            self.defect_mask = None
+            self.calibration_meta = None
+            self.is_calibrating = False
+            self._calib_frames.clear()
+
+            calib_dir = os.path.join(self.recorder.base_dir, "calibration")
+            for fname in ["defect_mask.npy", "master_dark.npy", "calibration_meta.json"]:
+                fpath = os.path.join(calib_dir, fname)
+                if os.path.exists(fpath):
+                    try:
+                        os.remove(fpath)
+                    except Exception:
+                        pass
+
+            event_logger.log("Black calibration cleared.")
+            return {"success": True, "calibrated": False}
 
     def set_n_avg(self, n):
         """Backwards compatibility for legacy average calls."""

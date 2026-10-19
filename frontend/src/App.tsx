@@ -101,6 +101,23 @@ interface ProcessingConfig {
   stride?: number;
 }
 
+interface CalibrationMeta {
+  timestamp: string;
+  frames_collected: number;
+  defect_pixel_count: number;
+  median_bg: number;
+  sigma_bg: number;
+  threshold: number;
+}
+
+interface CalibrationStatus {
+  is_calibrating: boolean;
+  frames_collected: number;
+  target_frames: number;
+  calibrated: boolean;
+  meta?: CalibrationMeta | null;
+}
+
 interface MotorStatus {
   duty_cycle?: number;
   current_duty?: number;
@@ -251,6 +268,48 @@ function App() {
   });
   const [roiInputs, setRoiInputs] = useState({ x: 0, y: 0, w: 1920, h: 1080 });
   const [showRoiBox, setShowRoiBox] = useState(true);
+
+  const [calibrationStatus, setCalibrationStatus] = useState<CalibrationStatus>({
+    is_calibrating: false,
+    frames_collected: 0,
+    target_frames: 15,
+    calibrated: false,
+    meta: null
+  });
+
+  const handleStartCalibration = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/calibration/black`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ frames: 15 })
+      });
+      if (res.ok) {
+        setCalibrationStatus(prev => ({ ...prev, is_calibrating: true, frames_collected: 0 }));
+        showToast('Black calibration started. Keep lens covered...');
+      }
+    } catch (e: any) {
+      showToast(`Calibration error: ${e.message}`, 4000);
+    }
+  };
+
+  const handleClearCalibration = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/calibration/black`, { method: 'DELETE' });
+      if (res.ok) {
+        setCalibrationStatus({
+          is_calibrating: false,
+          frames_collected: 0,
+          target_frames: 15,
+          calibrated: false,
+          meta: null
+        });
+        showToast('Black calibration cleared');
+      }
+    } catch (e: any) {
+      showToast(`Error clearing calibration: ${e.message}`, 4000);
+    }
+  };
 
   const handleToggleProcessing = async (stage: 'histogram' | 'corrupted_filter' | 'luminance_check') => {
     const newVal = !liveProcessing[stage];
@@ -522,6 +581,9 @@ function App() {
 
         const tRes = await fetch(`${API_BASE}/tracking/status`);
         if (tRes.ok) setTrackingStatus(await tRes.json());
+
+        const calRes = await fetch(`${API_BASE}/calibration/status`);
+        if (calRes.ok) setCalibrationStatus(await calRes.json());
       } catch (err) {
         console.error("Fetch error:", err);
       }
@@ -1521,6 +1583,48 @@ function App() {
                 >
                   JPEG
                 </button>
+              </div>
+            </div>
+
+            <div className="control-group" style={{ marginTop: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <label style={{ margin: 0 }}>Black Calibration</label>
+                {calibrationStatus.calibrated ? (
+                  <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>
+                    Calibrated ({calibrationStatus.meta?.defect_pixel_count ?? 0} hot px)
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '11px', color: '#9ca3af' }}>Uncalibrated</span>
+                )}
+              </div>
+              <div className="preset-row">
+                <button 
+                  type="button"
+                  className={calibrationStatus.calibrated ? 'active' : ''} 
+                  onClick={handleStartCalibration}
+                  disabled={calibrationStatus.is_calibrating || recordingStatus.is_recording}
+                  title="Cover lens or point to pitch-black sky to calibrate sensor dark level and map defective hot pixels for mosaic weighting."
+                >
+                  {calibrationStatus.is_calibrating 
+                    ? `Calibrating (${calibrationStatus.frames_collected}/${calibrationStatus.target_frames})...` 
+                    : (calibrationStatus.calibrated ? 'Recalibrate' : 'Black Calibration')}
+                </button>
+                {calibrationStatus.calibrated && (
+                  <button
+                    type="button"
+                    onClick={handleClearCalibration}
+                    disabled={calibrationStatus.is_calibrating}
+                    title="Clear black calibration and revert to uncalibrated"
+                    style={{ maxWidth: '75px', background: 'rgba(239, 68, 68, 0.15)', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#f87171' }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
+                {calibrationStatus.calibrated
+                  ? `Mapped ${calibrationStatus.meta?.defect_pixel_count} defect px (threshold >${calibrationStatus.meta?.threshold} ADU). Zero-weighted in mosaics.`
+                  : 'Cover lens with cap before clicking to map hot pixels for mosaic down-weighting.'}
               </div>
             </div>
           </div>

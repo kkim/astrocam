@@ -153,9 +153,9 @@ class MockAstroRig(BaseAstroRig):
             elif diff < 0:
                 frame = cv2.subtract(frame, -diff)
 
-        contrast_val = float(self.params.get("contrast", 32))
-        if contrast_val != 32:
-            slope = contrast_val / 32.0
+        contrast_val = float(self.params.get("contrast", 50))
+        if contrast_val != 50:
+            slope = contrast_val / 50.0
             x = np.arange(256, dtype=np.float32)
             lut = np.clip(128.0 + (x - 128.0) * slope, 0.0, 255.0).astype(np.uint8)
             frame = cv2.LUT(frame, lut)

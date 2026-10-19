@@ -9,6 +9,8 @@ vite_setsid.log
 
 # Captures
 capture_*.jpg
+*.tif
+*.tiff
 
 # Python
 __pycache__/

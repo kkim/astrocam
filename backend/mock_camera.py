@@ -30,6 +30,16 @@ class MockCamera:
             "gain": 64, "exposure": 1000, "sharpness": 50, "auto_exposure": 0,
             "auto_wb": 0, "gamma": 100
         }
+        cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r") as f:
+                    saved = json.load(f).get("camera_settings", {})
+                    for k in self.params:
+                        if k in saved:
+                            self.params[k] = saved[k]
+            except Exception:
+                pass
 
         # Drift position
         self.pos_x = self.width * 0.25

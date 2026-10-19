@@ -186,7 +186,7 @@ def get_mosaic_status(session_id: str):
     return get_session_mosaic_info(s_dir, session_id)
 
 # Configuration persistence
-CONFIG_PATH = "config.json"
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
 def load_config():
     if os.path.exists(CONFIG_PATH):
@@ -207,9 +207,56 @@ def save_config(config_data):
         current = load_config()
         current.update(config_data)
         with open(CONFIG_PATH, "w") as f:
-            json.dump(current, f)
+            json.dump(current, f, indent=2)
     except Exception as e:
         event_logger.log(f"Error saving config: {e}")
+
+def save_camera_settings():
+    try:
+        settings = {}
+        if rig and hasattr(rig, "get_camera_params"):
+            settings.update(rig.get_camera_params())
+        if pipeline:
+            settings["accumulation_count"] = pipeline.accumulation_count
+            settings["average"] = pipeline.accumulation_count
+        
+        proc_config = pipeline.get_processing_config() if pipeline and hasattr(pipeline, "get_processing_config") else {}
+        save_config({
+            "camera_settings": settings,
+            "pipeline_settings": proc_config
+        })
+        return True
+    except Exception as e:
+        event_logger.log(f"Error saving camera settings: {e}")
+        return False
+
+def restore_camera_settings():
+    try:
+        cfg = load_config()
+        cam_settings = cfg.get("camera_settings", {})
+        if cam_settings and rig:
+            for prop, val in cam_settings.items():
+                if prop in ("average", "accumulation_count"):
+                    if pipeline:
+                        pipeline.set_accumulation_count(int(val))
+                elif prop in ("format", "camera_format"):
+                    pass
+                else:
+                    try:
+                        rig.set_camera_param(prop, val)
+                    except Exception as e:
+                        event_logger.log(f"Error restoring camera param {prop}={val}: {e}")
+            event_logger.log(f"Restored camera settings: {list(cam_settings.keys())}")
+        
+        proc_settings = cfg.get("pipeline_settings", {})
+        if proc_settings and pipeline and hasattr(pipeline, "set_processing_config"):
+            try:
+                pipeline.set_processing_config(proc_settings)
+                event_logger.log(f"Restored pipeline processing settings: {list(proc_settings.keys())}")
+            except Exception as e:
+                event_logger.log(f"Error restoring pipeline settings: {e}")
+    except Exception as e:
+        event_logger.log(f"Error restoring settings from config.json: {e}")
 
 config = load_config()
 
@@ -220,6 +267,7 @@ camera_format = config.get("camera_format", "YUYV")
 rig = get_astro_rig(camera_mode=camera_mode, mount_mode=mount_mode, motor_pin=18, camera_format=camera_format)
 pipeline = AstroPipeline(rig)
 panorama = PanoramaManager(rig)
+restore_camera_settings()
 
 @app.on_event("shutdown")
 def shutdown_event():
@@ -469,6 +517,7 @@ def set_pipeline_processing(req: ProcessingUpdate):
         return {"success": False}
     updates = {k: v for k, v in req.dict().items() if v is not None}
     pipeline.set_processing_config(updates)
+    save_camera_settings()
     return {"success": True, **pipeline.get_processing_config()}
 
 @app.get("/controls")
@@ -486,6 +535,7 @@ def set_control(update: ControlUpdate):
         pipeline.reset_accumulation()
     if success:
         event_logger.log(f"Control: {update.property} -> {update.value}")
+        save_camera_settings()
     return {"success": success, "property": update.property, "value": update.value}
 
 class AccumulationUpdate(BaseModel):
@@ -495,7 +545,58 @@ class AccumulationUpdate(BaseModel):
 def set_pipeline_accumulation(req: AccumulationUpdate):
     if not pipeline: return {"success": False}
     success = pipeline.set_accumulation_count(req.count)
+    if success:
+        save_camera_settings()
     return {"success": success, "accumulation_count": pipeline.accumulation_count}
+
+@app.get("/camera/settings")
+def get_saved_camera_settings():
+    cfg = load_config()
+    return {
+        "camera_settings": cfg.get("camera_settings", {}),
+        "pipeline_settings": cfg.get("pipeline_settings", {})
+    }
+
+@app.post("/camera/settings/save")
+def manually_save_camera_settings():
+    ok = save_camera_settings()
+    cfg = load_config()
+    return {
+        "success": ok,
+        "camera_settings": cfg.get("camera_settings", {}),
+        "pipeline_settings": cfg.get("pipeline_settings", {})
+    }
+
+@app.post("/camera/settings/restore")
+def manually_restore_camera_settings():
+    restore_camera_settings()
+    return {
+        "success": True,
+        "controls": get_controls(),
+        "processing": pipeline.get_processing_config() if pipeline and hasattr(pipeline, "get_processing_config") else {}
+    }
+
+class BlackCalibrationRequest(BaseModel):
+    frames: int = 15
+
+@app.post("/calibration/black")
+def start_black_calibration(req: Optional[BlackCalibrationRequest] = None):
+    if not pipeline:
+        return {"success": False, "error": "Pipeline not initialized"}
+    frames = req.frames if req else 15
+    return pipeline.start_black_calibration(target_frames=frames)
+
+@app.get("/calibration/status")
+def get_calibration_status():
+    if not pipeline:
+        return {"calibrated": False, "is_calibrating": False}
+    return pipeline.get_calibration_status()
+
+@app.delete("/calibration/black")
+def clear_black_calibration():
+    if not pipeline:
+        return {"success": False, "error": "Pipeline not initialized"}
+    return pipeline.clear_black_calibration()
 
 class RecordingStartRequest(BaseModel):
     accumulation_count: Optional[int] = None

@@ -198,6 +198,7 @@ def combine_images(
     stretch_factor: float = 60.0,
     black_percentile: float = 0.5,
     max_frames: Optional[int] = None,
+    defect_mask_path: Optional[str] = None,
     save_individual_renders: bool = True,
     verbose: bool = True,
 ) -> Dict[str, Any]:
@@ -342,6 +343,28 @@ def combine_images(
 
     feather_mask = create_feather_mask(h, w, feather_px)
 
+    # Load sensor defect mask if provided or available in captures/calibration
+    if defect_mask_path is None:
+        default_mask_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../captures/calibration/defect_mask.npy"))
+        if os.path.exists(default_mask_path):
+            defect_mask_path = default_mask_path
+
+    pixel_weights = None
+    if defect_mask_path and os.path.exists(defect_mask_path):
+        try:
+            d_mask = np.load(defect_mask_path)
+            if d_mask.shape == (h, w):
+                # 0.0 weight for defective/hot pixels, 1.0 for healthy pixels
+                pixel_weights = np.where(d_mask > 0, 0.0, 1.0).astype(np.float64)
+                if verbose:
+                    defect_count = int(np.sum(d_mask > 0))
+                    print(f"[*] Applied defect mask ({os.path.basename(defect_mask_path)}): {defect_count} defective pixels down-weighted to 0.0 in mosaic.")
+        except Exception as e:
+            if verbose:
+                print(f"[!] Warning reading defect mask: {e}")
+
+    sensor_weight = feather_mask * pixel_weights if pixel_weights is not None else feather_mask
+
     for idx, (d, (tx, ty)) in enumerate(zip(detections, shifts)):
         frame = cv2.imread(d["path"], cv2.IMREAD_UNCHANGED)
         if frame is None:
@@ -363,7 +386,7 @@ def combine_images(
         )
 
         warped_weights = cv2.warpAffine(
-            feather_mask,
+            sensor_weight,
             M,
             (canvas_w, canvas_h),
             flags=cv2.INTER_LINEAR,
@@ -520,6 +543,12 @@ def parse_args():
         default=None,
         help="Maximum number of frames to process (useful for quick test runs)",
     )
+    parser.add_argument(
+        "--defect-mask",
+        type=str,
+        default=None,
+        help="Path to defect_mask.npy containing sensor defect map to zero-weight hot pixels",
+    )
     return parser.parse_args()
 
 
@@ -534,6 +563,7 @@ if __name__ == "__main__":
         stretch_factor=args.stretch_factor,
         black_percentile=args.black_percentile,
         max_frames=args.max_frames,
+        defect_mask_path=args.defect_mask,
         save_individual_renders=True,
         verbose=True,
     )
