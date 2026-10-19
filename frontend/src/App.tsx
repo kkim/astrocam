@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles } from 'lucide-react';
+import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles, Save } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -627,6 +627,19 @@ function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ property: prop, value: val })
     }).catch(e => console.error(e));
+  };
+
+  const handleSaveCameraSettings = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/camera/settings/save`, { method: 'POST' });
+      if (res.ok) {
+        showToast('Camera & processing settings saved to JSON as startup defaults');
+      } else {
+        showToast('Failed to save settings', 3000);
+      }
+    } catch (e: any) {
+      showToast(`Error saving settings: ${e.message}`, 4000);
+    }
   };
 
   const updateMotorSpeed = (speed: number) => {
@@ -1747,7 +1760,19 @@ function App() {
           </div>
 
           <div className="control-section">
-            <div className="section-header"><RefreshCw size={16} /> Camera Settings</div>
+            <div className="section-header" style={{ justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <RefreshCw size={16} /> Camera Settings
+              </div>
+              <button
+                type="button"
+                className="save-defaults-btn"
+                onClick={handleSaveCameraSettings}
+                title="Save current camera and processing settings to config.json as startup defaults"
+              >
+                <Save size={12} /> Save Defaults
+              </button>
+            </div>
 
             <div className="control-group">
               <label>Pixel Format</label>
