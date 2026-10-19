@@ -402,42 +402,38 @@ function App() {
     if (!ctx) return;
 
     const drawHistogram = (data: number[]) => {
-      const w = canvas.width;  // 512
-      const h = canvas.height; // 48
+      const cvs = histCanvasRef.current;
+      if (!cvs) return;
+      if (cvs.width !== 512) cvs.width = 512;
+      if (cvs.height !== 48) cvs.height = 48;
+      const ctx = cvs.getContext('2d');
+      if (!ctx) return;
+
+      const w = 512;
+      const h = 48;
       ctx.clearRect(0, 0, w, h);
 
-      // Hardcoded log scaling: log10(count + 1)
-      const logCounts = data.map(c => Math.log10(c + 1));
-      const maxLog = Math.max(...logCounts, 1.0);
-      const n = logCounts.length;
+      const n = data.length;
       if (n === 0) return;
 
-      // 1. Fill area under the curve
-      ctx.beginPath();
-      ctx.moveTo(0, h);
-      for (let i = 0; i < n; i++) {
-        const x = (i / (n - 1)) * (w - 1);
-        const barH = (logCounts[i] / maxLog) * (h - 4);
-        ctx.lineTo(x, h - barH);
-      }
-      ctx.lineTo(w - 1, h);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(88, 166, 255, 0.35)';
-      ctx.fill();
+      // Hardcoded log scaling: log10(count + 1)
+      const logCounts = data.map(c => (c > 0 ? Math.log10(c + 1) : 0));
+      const maxLog = Math.max(...logCounts, 1.0);
 
-      // 2. Draw thicker solid contour line on top
-      ctx.beginPath();
+      // Baseline axis
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.fillRect(0, h - 1, w, 1);
+
+      // Discrete bar graph: every bin is an independent 2px vertical bar
+      const barW = w / n; // 512 / 256 = 2.0px per bin
+      ctx.fillStyle = '#58a6ff';
+
       for (let i = 0; i < n; i++) {
-        const x = (i / (n - 1)) * (w - 1);
-        const barH = (logCounts[i] / maxLog) * (h - 4);
-        const y = h - barH;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        if (logCounts[i] <= 0) continue;
+        const barH = Math.max(1, Math.round((logCounts[i] / maxLog) * (h - 2)));
+        const x = i * barW;
+        ctx.fillRect(x, h - barH, barW, barH);
       }
-      ctx.strokeStyle = '#58a6ff';
-      ctx.lineWidth = 2;
-      ctx.lineJoin = 'round';
-      ctx.stroke();
     };
 
     const fetchHistogram = async () => {
