@@ -160,9 +160,10 @@ body, html, #root {
 }
 
 .stream-histogram-canvas {
-  width: 256px;
+  width: 512px;
   height: 48px;
   display: block;
+  max-width: 100%;
 }
 
 /* ROI Bounding Box Overlay */

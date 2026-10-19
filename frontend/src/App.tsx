@@ -402,32 +402,36 @@ function App() {
     if (!ctx) return;
 
     const drawHistogram = (data: number[]) => {
-      const w = canvas.width;  // 256
+      const w = canvas.width;  // 512
       const h = canvas.height; // 48
       ctx.clearRect(0, 0, w, h);
 
       // Hardcoded log scaling: log10(count + 1)
       const logCounts = data.map(c => Math.log10(c + 1));
       const maxLog = Math.max(...logCounts, 1.0);
+      const n = logCounts.length;
+      if (n === 0) return;
 
       // 1. Fill area under the curve
       ctx.beginPath();
       ctx.moveTo(0, h);
-      for (let x = 0; x < w && x < logCounts.length; x++) {
-        const barH = (logCounts[x] / maxLog) * (h - 4);
+      for (let i = 0; i < n; i++) {
+        const x = (i / (n - 1)) * (w - 1);
+        const barH = (logCounts[i] / maxLog) * (h - 4);
         ctx.lineTo(x, h - barH);
       }
-      ctx.lineTo(Math.min(w, logCounts.length) - 1, h);
+      ctx.lineTo(w - 1, h);
       ctx.closePath();
       ctx.fillStyle = 'rgba(88, 166, 255, 0.35)';
       ctx.fill();
 
       // 2. Draw thicker solid contour line on top
       ctx.beginPath();
-      for (let x = 0; x < w && x < logCounts.length; x++) {
-        const barH = (logCounts[x] / maxLog) * (h - 4);
+      for (let i = 0; i < n; i++) {
+        const x = (i / (n - 1)) * (w - 1);
+        const barH = (logCounts[i] / maxLog) * (h - 4);
         const y = h - barH;
-        if (x === 0) ctx.moveTo(x, y);
+        if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
       ctx.strokeStyle = '#58a6ff';
@@ -1081,7 +1085,7 @@ function App() {
               <span className="stream-histogram-label">
                 HIST (LOG){liveProcessing.roi && (liveProcessing.roi[2] !== 1920 || liveProcessing.roi[3] !== 1080) ? ` • ROI ${liveProcessing.roi[2]}x${liveProcessing.roi[3]}` : ''} • {liveProcessing.stride || 4}x
               </span>
-              <canvas ref={histCanvasRef} width={256} height={48} className="stream-histogram-canvas" />
+              <canvas ref={histCanvasRef} width={512} height={48} className="stream-histogram-canvas" />
             </div>
           )}
         </div>
