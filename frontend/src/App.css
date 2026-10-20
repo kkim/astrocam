@@ -146,7 +146,7 @@ body, html, #root {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  pointer-events: none;
+  pointer-events: auto;
   z-index: 10;
 }
 
@@ -157,6 +157,7 @@ body, html, #root {
   color: #8b949e;
   text-transform: uppercase;
   line-height: 1;
+  user-select: none;
 }
 
 .stream-histogram-canvas {
@@ -164,6 +165,8 @@ body, html, #root {
   height: 54px;
   display: block;
   max-width: 100%;
+  cursor: col-resize;
+  touch-action: none;
 }
 
 /* ROI Bounding Box Overlay */

@@ -279,6 +279,94 @@ function App() {
 
   const [streamEpoch, setStreamEpoch] = useState<number>(Date.now());
 
+  // Interactive Astrophotography Display Contrast / Stretch (Black & White point handles on Histogram)
+  const [blackPoint, setBlackPoint] = useState<number>(0);
+  const [whitePoint, setWhitePoint] = useState<number>(255);
+  const [activeHandle, setActiveHandle] = useState<'black' | 'white' | null>(null);
+  const blackPointRef = useRef(blackPoint);
+  const whitePointRef = useRef(whitePoint);
+  const lastHistDataRef = useRef<number[]>([]);
+  const drawHistogramRef = useRef<(data: number[]) => void>(() => {});
+
+  useEffect(() => {
+    blackPointRef.current = blackPoint;
+    whitePointRef.current = whitePoint;
+  }, [blackPoint, whitePoint]);
+
+  const stretchSpan = Math.max(1, whitePoint - blackPoint);
+  const stretchSlope = (255 / stretchSpan).toFixed(4);
+  const stretchIntercept = (-blackPoint / stretchSpan).toFixed(4);
+  const isDisplayStretched = blackPoint > 0 || whitePoint < 255;
+
+  const handleHistPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const bin = Math.max(0, Math.min(255, Math.round((x / rect.width) * 255)));
+
+    const distB = Math.abs(bin - blackPointRef.current);
+    const distW = Math.abs(bin - whitePointRef.current);
+
+    if (distB <= distW) {
+      const nextB = Math.min(bin, whitePointRef.current - 2);
+      setBlackPoint(nextB);
+      blackPointRef.current = nextB;
+      setActiveHandle('black');
+    } else {
+      const nextW = Math.max(bin, blackPointRef.current + 2);
+      setWhitePoint(nextW);
+      whitePointRef.current = nextW;
+      setActiveHandle('white');
+    }
+    if (lastHistDataRef.current.length > 0) {
+      drawHistogramRef.current(lastHistDataRef.current);
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleHistPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
+    if (!activeHandle) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const bin = Math.max(0, Math.min(255, Math.round((x / rect.width) * 255)));
+
+    if (activeHandle === 'black') {
+      const nextB = Math.min(bin, whitePointRef.current - 2);
+      setBlackPoint(nextB);
+      blackPointRef.current = nextB;
+    } else if (activeHandle === 'white') {
+      const nextW = Math.max(bin, blackPointRef.current + 2);
+      setWhitePoint(nextW);
+      whitePointRef.current = nextW;
+    }
+    if (lastHistDataRef.current.length > 0) {
+      drawHistogramRef.current(lastHistDataRef.current);
+    }
+  };
+
+  const handleHistPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
+    setActiveHandle(null);
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleHistDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
+    setBlackPoint(0);
+    setWhitePoint(255);
+    blackPointRef.current = 0;
+    whitePointRef.current = 255;
+    if (lastHistDataRef.current.length > 0) {
+      drawHistogramRef.current(lastHistDataRef.current);
+    }
+    showToast('Display stretch reset (0 – 255)');
+  };
+
   const handleStartCalibration = async () => {
     try {
       const res = await fetch(`${API_BASE}/calibration/black`, {
@@ -544,6 +632,8 @@ function App() {
     if (!ctx) return;
 
     const drawHistogram = (data: number[]) => {
+      lastHistDataRef.current = data;
+      drawHistogramRef.current = drawHistogram;
       const cvs = histCanvasRef.current;
       if (!cvs) return;
       const w = 512;
@@ -589,6 +679,28 @@ function App() {
           ctx.fillRect(x, yAxis + 1, 1, 4);
         }
       }
+
+      // Draw Black Point handle (Sky Blue cursor & pointer)
+      const curB = blackPointRef.current;
+      const bx = Math.round(curB * barW);
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(bx - 1, 0, 2, yAxis);
+      ctx.beginPath();
+      ctx.moveTo(bx - 4, yAxis + 9);
+      ctx.lineTo(bx + 4, yAxis + 9);
+      ctx.lineTo(bx, yAxis + 1);
+      ctx.fill();
+
+      // Draw White Point handle (Amber cursor & pointer)
+      const curW = whitePointRef.current;
+      const wx = Math.round(curW * barW);
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillRect(wx - 1, 0, 2, yAxis);
+      ctx.beginPath();
+      ctx.moveTo(wx - 4, yAxis + 9);
+      ctx.lineTo(wx + 4, yAxis + 9);
+      ctx.lineTo(wx, yAxis + 1);
+      ctx.fill();
     };
 
     const fetchHistogram = async () => {
@@ -1169,11 +1281,23 @@ function App() {
           onPointerCancel={handlePointerUpStream}
           title="Drag on stream to select Region of Interest (ROI)"
         >
+          {/* Astrophotography Display Contrast / Stretch Filter (GPU accelerated) */}
+          <svg style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }} aria-hidden="true">
+            <filter id="canvas-stretch" colorInterpolationFilters="sRGB">
+              <feComponentTransfer>
+                <feFuncR type="linear" slope={stretchSlope} intercept={stretchIntercept} />
+                <feFuncG type="linear" slope={stretchSlope} intercept={stretchIntercept} />
+                <feFuncB type="linear" slope={stretchSlope} intercept={stretchIntercept} />
+              </feComponentTransfer>
+            </filter>
+          </svg>
+
           <img 
             key={streamEpoch}
             src={`${API_BASE}/stream?t=${streamEpoch}`} 
             alt="Live Stream" 
             className="video-preview" 
+            style={{ filter: isDisplayStretched ? 'url(#canvas-stretch)' : undefined }}
             onError={() => {
               setTimeout(() => setStreamEpoch(Date.now()), 1500);
             }}
@@ -1268,10 +1392,24 @@ function App() {
           </div>
           {liveProcessing.histogram && (
             <div className="stream-histogram">
-              <span className="stream-histogram-label">
-                HIST (LOG){liveProcessing.roi && (liveProcessing.roi[2] !== 1920 || liveProcessing.roi[3] !== 1080) ? ` • ROI ${liveProcessing.roi[2]}x${liveProcessing.roi[3]}` : ''} • {liveProcessing.stride || 4}x
+              <span 
+                className="stream-histogram-label" 
+                title="Drag sky-blue / amber cursors to stretch display contrast. Double-click to reset."
+              >
+                HIST (LOG){isDisplayStretched ? ` • STRETCH [${blackPoint}–${whitePoint}]` : ''}{liveProcessing.roi && (liveProcessing.roi[2] !== 1920 || liveProcessing.roi[3] !== 1080) ? ` • ROI ${liveProcessing.roi[2]}x${liveProcessing.roi[3]}` : ''} • {liveProcessing.stride || 4}x
               </span>
-              <canvas ref={histCanvasRef} width={512} height={54} className="stream-histogram-canvas" />
+              <canvas 
+                ref={histCanvasRef} 
+                width={512} 
+                height={54} 
+                className="stream-histogram-canvas" 
+                title="Drag sky-blue (black point) or amber (white point) cursor to stretch display contrast. Double-click to reset."
+                onPointerDown={handleHistPointerDown}
+                onPointerMove={handleHistPointerMove}
+                onPointerUp={handleHistPointerUp}
+                onPointerCancel={handleHistPointerUp}
+                onDoubleClick={handleHistDoubleClick}
+              />
             </div>
           )}
         </div>
