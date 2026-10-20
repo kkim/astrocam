@@ -48,9 +48,9 @@ class MockCamera:
 
         # Load persisted simulation parameters
         config_data = {}
-        if os.path.exists("config.json"):
+        if os.path.exists(cfg_path):
             try:
-                with open("config.json", "r") as f:
+                with open(cfg_path, "r") as f:
                     config_data = json.load(f)
             except Exception:
                 pass

@@ -633,6 +633,9 @@ function App() {
           if (hData.mount_mode) setMountEngine(hData.mount_mode);
           if (hData.camera_format) setCameraFormat(hData.camera_format);
           if (hData.recording) setRecordingStatus(hData.recording);
+          if (hData.accumulation_count !== undefined) {
+            setAccumulationCount(hData.accumulation_count);
+          }
           if (hData.processing) {
             setLiveProcessing(hData.processing);
           }

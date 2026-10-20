@@ -326,26 +326,7 @@ class RealCamera:
             return True
 
     def get_camera_params(self) -> Dict[str, Any]:
-        res = {**self.params, "format": self.format}
-        if self.cap and self.cap.isOpened():
-            for p, prop_id in {
-                "brightness": cv2.CAP_PROP_BRIGHTNESS,
-                "exposure": cv2.CAP_PROP_EXPOSURE,
-                "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE,
-                "auto_wb": cv2.CAP_PROP_AUTO_WB,
-                "gamma": cv2.CAP_PROP_GAMMA,
-            }.items():
-                try:
-                    val = self.cap.get(prop_id)
-                    if p == "auto_exposure" and val > 0:
-                        res[p] = 1 if val >= 3 else 0
-                    elif p == "auto_wb" and val >= 0:
-                        res[p] = 1 if val > 0 else 0
-                    elif val > 0:
-                        res[p] = val
-                except Exception:
-                    pass
-        return res
+        return {**self.params, "format": self.format}
 
     def get_camera_status(self) -> Dict[str, Any]:
         is_connected = self.cap is not None and self.cap.isOpened() and self.raw_frame is not None

@@ -20,7 +20,7 @@ import numpy as np
 from logger import event_logger
 from star_sources import altaz, available_backends, resolve_name
 
-CONFIG_PATH = "config.json"
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 HISTORY_LIMIT = 10
 SIDEREAL_ARCSEC_PER_SEC = 15.0411  # 360 deg / 23h56m04s
 

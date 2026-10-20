@@ -235,17 +235,34 @@ def restore_camera_settings():
         cfg = load_config()
         cam_settings = cfg.get("camera_settings", {})
         if cam_settings and rig:
+            # 1. Apply auto_exposure first so V4L2 locks to manual mode before setting manual exposure
+            if "auto_exposure" in cam_settings:
+                try:
+                    rig.set_camera_param("auto_exposure", cam_settings["auto_exposure"])
+                except Exception as e:
+                    event_logger.log(f"Error restoring auto_exposure: {e}")
+
+            # 2. Apply exposure second (only effective when auto_exposure=0 in V4L2)
+            if "exposure" in cam_settings:
+                try:
+                    rig.set_camera_param("exposure", cam_settings["exposure"])
+                except Exception as e:
+                    event_logger.log(f"Error restoring exposure: {e}")
+
+            # 3. Apply remaining camera parameters
             for prop, val in cam_settings.items():
-                if prop in ("average", "accumulation_count"):
-                    if pipeline:
-                        pipeline.set_accumulation_count(int(val))
-                elif prop in ("format", "camera_format"):
-                    pass
-                else:
-                    try:
-                        rig.set_camera_param(prop, val)
-                    except Exception as e:
-                        event_logger.log(f"Error restoring camera param {prop}={val}: {e}")
+                if prop in ("auto_exposure", "exposure", "format", "camera_format", "average", "accumulation_count"):
+                    continue
+                try:
+                    rig.set_camera_param(prop, val)
+                except Exception as e:
+                    event_logger.log(f"Error restoring camera param {prop}={val}: {e}")
+
+            # 4. Restore accumulation count
+            acc_val = cam_settings.get("accumulation_count", cam_settings.get("average"))
+            if acc_val is not None and pipeline:
+                pipeline.set_accumulation_count(int(acc_val))
+
             event_logger.log(f"Restored camera settings: {list(cam_settings.keys())}")
         
         proc_settings = cfg.get("pipeline_settings", {})

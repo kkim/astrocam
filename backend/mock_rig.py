@@ -35,9 +35,10 @@ class MockAstroRig(BaseAstroRig):
         # Load persisted simulation parameters from config.json if available
         import json
         config_data = {}
-        if os.path.exists("config.json"):
+        cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
+        if os.path.exists(cfg_path):
             try:
-                with open("config.json", "r") as f:
+                with open(cfg_path, "r") as f:
                     config_data = json.load(f)
             except Exception:
                 pass
@@ -240,15 +241,16 @@ class MockAstroRig(BaseAstroRig):
     def _save_to_config(self, key, value):
         import json
         config_data = {}
-        if os.path.exists("config.json"):
+        cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
+        if os.path.exists(cfg_path):
             try:
-                with open("config.json", "r") as f:
+                with open(cfg_path, "r") as f:
                     config_data = json.load(f)
             except Exception:
                 pass
         config_data[key] = value
         try:
-            with open("config.json", "w") as f:
-                json.dump(config_data, f)
+            with open(cfg_path, "w") as f:
+                json.dump(config_data, f, indent=2)
         except Exception:
             pass
