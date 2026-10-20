@@ -14,7 +14,7 @@ class RealCamera:
     Manages physical USB camera hardware (e.g. SVBONY SV205) using V4L2.
     Includes automatic device discovery, stream recovery, and reconnect capabilities.
     """
-    def __init__(self, camera_id: Optional[int] = None, format: str = 'YUYV'):
+    def __init__(self, camera_id: Optional[int] = None, format: str = 'MJPG'):
         self.camera_id = camera_id
         self.device_name = "Unknown"
         self.cap: Optional[cv2.VideoCapture] = None

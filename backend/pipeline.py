@@ -363,25 +363,30 @@ class AstroPipeline:
             bytes: JPEG-encoded image bytes or None if no frame is available.
         """
         with self.lock:
-            if self.latest_frame is None: return None
-            h, w = self.latest_frame.shape[:2]
-            display_w = 1280
-            display_h = int(display_w * (h / w))
-            img = cv2.resize(self.latest_frame, (display_w, display_h))
-            
-            # Draw reference star crosshairs if auto-tracking is active and reference stars are detected
-            if self.auto_tracking and self.reference_stars:
-                scale_x = display_w / w
-                scale_y = display_h / h
-                for rx, ry in self.reference_stars:
-                    cx = int(rx * scale_x)
-                    cy = int(ry * scale_y)
-                    # Draw a cyan crosshair and target circle
-                    cv2.drawMarker(img, (cx, cy), (0, 255, 255), markerType=cv2.MARKER_CROSS, markerSize=16, thickness=1)
-                    cv2.circle(img, (cx, cy), 6, (0, 255, 255), 1)
+            if self.latest_frame is None:
+                return None
+            frame = self.latest_frame.copy()
+            ref_stars = list(self.reference_stars) if (self.auto_tracking and self.reference_stars) else None
 
-            ret, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            return jpeg.tobytes() if ret else None
+        # Process resize and JPEG encode outside lock to prevent blocking API endpoints
+        h, w = frame.shape[:2]
+        display_w = 1280
+        display_h = int(display_w * (h / w))
+        img = cv2.resize(frame, (display_w, display_h))
+        
+        # Draw reference star crosshairs if auto-tracking is active and reference stars are detected
+        if ref_stars:
+            scale_x = display_w / w
+            scale_y = display_h / h
+            for rx, ry in ref_stars:
+                cx = int(rx * scale_x)
+                cy = int(ry * scale_y)
+                # Draw a cyan crosshair and target circle
+                cv2.drawMarker(img, (cx, cy), (0, 255, 255), markerType=cv2.MARKER_CROSS, markerSize=16, thickness=1)
+                cv2.circle(img, (cx, cy), 6, (0, 255, 255), 1)
+
+        ret, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return jpeg.tobytes() if ret else None
 
     def get_histogram(self):
         """Returns the current 256-bin luminance histogram."""

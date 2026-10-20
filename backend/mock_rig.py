@@ -113,9 +113,9 @@ class MockAstroRig(BaseAstroRig):
                 self.raw_frame = frame
                 self.frame_id += 1
 
-            # Hardware-realistic rate limit: SV205 over USB 2.0 physically caps at 30 FPS (~33.3 ms).
+            # Smooth responsive live preview: clamped between 15 FPS and 30 FPS
             exp_val = float(self.params.get("exposure", 300))
-            exp_sec = max(exp_val * 0.0001, 1.0 / 30.0)
+            exp_sec = min(0.066, max(exp_val * 0.0001, 1.0 / 30.0))
 
             elapsed = time.perf_counter() - t_start
             sleep_time = max(0.005, exp_sec - elapsed)

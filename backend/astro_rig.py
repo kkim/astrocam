@@ -14,7 +14,7 @@ def get_astro_rig(
     camera_id: Optional[int] = None,
     motor_pin: int = 18,
     mode: Optional[str] = None,
-    camera_format: str = "YUYV"
+    camera_format: str = "MJPG"
 ) -> CompositeAstroRig:
     """
     Provisions an AstroRig with decoupled, independently selectable camera and mount engines.
