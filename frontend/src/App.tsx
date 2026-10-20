@@ -277,6 +277,8 @@ function App() {
     meta: null
   });
 
+  const [streamEpoch, setStreamEpoch] = useState<number>(Date.now());
+
   const handleStartCalibration = async () => {
     try {
       const res = await fetch(`${API_BASE}/calibration/black`, {
@@ -864,6 +866,7 @@ function App() {
     }).then(res => res.json()).then(data => {
       if (data.success) {
         setCameraEngine(data.camera_mode);
+        setStreamEpoch(Date.now());
         showToast(`Camera set to ${data.camera_mode}`);
       }
     }).catch(e => showToast(`Error: ${e.message}`, 4000));
@@ -894,6 +897,7 @@ function App() {
       .then(data => {
         if (data.success) {
           setCameraFormat(data.camera_format);
+          setStreamEpoch(Date.now());
           showToast(`Camera format set to ${data.camera_format}`);
         } else {
           showToast(`Format switch failed: ${data.error || 'Check camera support'}`, 4000);
@@ -1162,7 +1166,15 @@ function App() {
           onPointerCancel={handlePointerUpStream}
           title="Drag on stream to select Region of Interest (ROI)"
         >
-          <img src={`${API_BASE}/stream`} alt="Live Stream" className="video-preview" />
+          <img 
+            key={streamEpoch}
+            src={`${API_BASE}/stream?t=${streamEpoch}`} 
+            alt="Live Stream" 
+            className="video-preview" 
+            onError={() => {
+              setTimeout(() => setStreamEpoch(Date.now()), 1500);
+            }}
+          />
           
           {/* ROI Bounding Box Overlay */}
           {(() => {
