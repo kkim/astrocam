@@ -540,7 +540,7 @@ function App() {
 
   const handlePointerDownStream = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest('button, input, select, textarea')) return;
+    if ((e.target as HTMLElement).closest('button, input, select, textarea, .stream-histogram')) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const fw = health.width || 1920;
@@ -1391,7 +1391,12 @@ function App() {
             )}
           </div>
           {liveProcessing.histogram && (
-            <div className="stream-histogram">
+            <div 
+              className="stream-histogram"
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerMove={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+            >
               <span 
                 className="stream-histogram-label" 
                 title="Drag sky-blue / amber cursors to stretch display contrast. Double-click to reset."
