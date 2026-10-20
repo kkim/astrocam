@@ -598,6 +598,33 @@ def clear_black_calibration():
         return {"success": False, "error": "Pipeline not initialized"}
     return pipeline.clear_black_calibration()
 
+class BaselineCaptureRequest(BaseModel):
+    key: str
+    frames: int = 10
+
+class BaselineConfigRequest(BaseModel):
+    subtract: Optional[bool] = None
+    pedestal: Optional[float] = None
+    key: Optional[str] = None
+
+@app.get("/calibration/baseline/status")
+def get_baseline_status(key: str = ""):
+    if not pipeline:
+        return {"exists": False, "subtract": False, "pedestal": 10.0}
+    return pipeline.check_baseline_status(key)
+
+@app.post("/calibration/baseline/capture")
+def capture_baseline(req: BaselineCaptureRequest):
+    if not pipeline:
+        return {"success": False, "error": "Pipeline not initialized"}
+    return pipeline.start_baseline_capture(key=req.key, frames=req.frames)
+
+@app.post("/calibration/baseline/config")
+def update_baseline_config(req: BaselineConfigRequest):
+    if not pipeline:
+        return {"success": False, "error": "Pipeline not initialized"}
+    return pipeline.set_baseline_config(subtract=req.subtract, pedestal=req.pedestal, key=req.key)
+
 class RecordingStartRequest(BaseModel):
     accumulation_count: Optional[int] = None
     accumulation_ms: Optional[int] = None

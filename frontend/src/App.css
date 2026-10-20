@@ -161,7 +161,7 @@ body, html, #root {
 
 .stream-histogram-canvas {
   width: 512px;
-  height: 48px;
+  height: 54px;
   display: block;
   max-width: 100%;
 }

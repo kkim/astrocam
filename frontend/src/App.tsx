@@ -311,6 +311,87 @@ function App() {
     }
   };
 
+  // Setting-Indexed Baseline Calibration State
+  const [baselineStatus, setBaselineStatus] = useState<{
+    exists: boolean;
+    subtract: boolean;
+    pedestal: number;
+    is_capturing: boolean;
+  }>({
+    exists: false,
+    subtract: false,
+    pedestal: 10,
+    is_capturing: false
+  });
+  const [pedestalInput, setPedestalInput] = useState<number>(10);
+
+  const baselineKey = `E${controls.exposure ?? 1000}-G${controls.gain ?? 64}-B${controls.brightness ?? 0}-C${controls.contrast ?? 50}-S${controls.saturation ?? 0}-S${controls.sharpness ?? 50}-G${controls.gamma ?? 100}`;
+
+  const fetchBaselineStatus = async (key: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/calibration/baseline/status?key=${encodeURIComponent(key)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setBaselineStatus(data);
+        if (data.pedestal !== undefined) {
+          setPedestalInput(data.pedestal);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleCaptureBaseline = async () => {
+    try {
+      setBaselineStatus(prev => ({ ...prev, is_capturing: true }));
+      const res = await fetch(`${API_BASE}/calibration/baseline/capture`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: baselineKey, frames: 10 })
+      });
+      if (res.ok) {
+        showToast(`Baseline capturing for ${baselineKey} (10 frames, cap on)...`);
+        setTimeout(() => fetchBaselineStatus(baselineKey), 1200);
+      }
+    } catch (e: any) {
+      showToast(`Error capturing baseline: ${e.message}`, 4000);
+      setBaselineStatus(prev => ({ ...prev, is_capturing: false }));
+    }
+  };
+
+  const handleToggleSubtract = async () => {
+    const nextVal = !baselineStatus.subtract;
+    try {
+      const res = await fetch(`${API_BASE}/calibration/baseline/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subtract: nextVal, key: baselineKey })
+      });
+      if (res.ok) {
+        setBaselineStatus(prev => ({ ...prev, subtract: nextVal }));
+        showToast(`Baseline subtract: ${nextVal ? 'ON' : 'OFF'}`);
+      }
+    } catch (e: any) {
+      showToast(`Error toggling subtract: ${e.message}`, 4000);
+    }
+  };
+
+  const handleSetPedestal = async (val: number) => {
+    const p = Math.max(0, Math.min(100, val));
+    setPedestalInput(p);
+    try {
+      await fetch(`${API_BASE}/calibration/baseline/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pedestal: p, key: baselineKey })
+      });
+      setBaselineStatus(prev => ({ ...prev, pedestal: p }));
+    } catch (e: any) {
+      console.error("Error setting pedestal:", e);
+    }
+  };
+
   const handleToggleProcessing = async (stage: 'histogram' | 'corrupted_filter' | 'luminance_check') => {
     const newVal = !liveProcessing[stage];
     setLiveProcessing(prev => ({ ...prev, [stage]: newVal }));
@@ -463,13 +544,14 @@ function App() {
     const drawHistogram = (data: number[]) => {
       const cvs = histCanvasRef.current;
       if (!cvs) return;
-      if (cvs.width !== 512) cvs.width = 512;
-      if (cvs.height !== 48) cvs.height = 48;
+      const w = 512;
+      const h = 54;
+      if (cvs.width !== w) cvs.width = w;
+      if (cvs.height !== h) cvs.height = h;
       const ctx = cvs.getContext('2d');
       if (!ctx) return;
 
-      const w = 512;
-      const h = 48;
+      const yAxis = 44; // Baseline axis position: bars above, ticks below
       ctx.clearRect(0, 0, w, h);
 
       const n = data.length;
@@ -479,19 +561,31 @@ function App() {
       const logCounts = data.map(c => (c > 0 ? Math.log10(c + 1) : 0));
       const maxLog = Math.max(...logCounts, 1.0);
 
-      // Baseline axis
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.fillRect(0, h - 1, w, 1);
-
       // Discrete bar graph: every bin is an independent 2px vertical bar
       const barW = w / n; // 512 / 256 = 2.0px per bin
       ctx.fillStyle = '#58a6ff';
 
       for (let i = 0; i < n; i++) {
         if (logCounts[i] <= 0) continue;
-        const barH = Math.max(1, Math.round((logCounts[i] / maxLog) * (h - 2)));
+        const barH = Math.max(1, Math.round((logCounts[i] / maxLog) * (yAxis - 2)));
         const x = i * barW;
-        ctx.fillRect(x, h - barH, barW, barH);
+        ctx.fillRect(x, yAxis - barH, barW, barH);
+      }
+
+      // Horizontal baseline x-axis line
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.fillRect(0, yAxis, w, 1);
+
+      // Ticks below x-axis: %100=0 -> thickness 2 ticks below x axis, %10=0 -> thickness 1 ticks
+      for (let i = 0; i < n; i++) {
+        const x = Math.round(i * barW);
+        if (i % 100 === 0) {
+          ctx.fillStyle = '#e6edf3';
+          ctx.fillRect(x - 1, yAxis + 1, 2, 7);
+        } else if (i % 10 === 0) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+          ctx.fillRect(x, yAxis + 1, 1, 4);
+        }
       }
     };
 
@@ -584,6 +678,8 @@ function App() {
 
         const calRes = await fetch(`${API_BASE}/calibration/status`);
         if (calRes.ok) setCalibrationStatus(await calRes.json());
+
+        fetchBaselineStatus(baselineKey);
       } catch (err) {
         console.error("Fetch error:", err);
       }
@@ -592,7 +688,11 @@ function App() {
     fetchData();
     const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
-  }, [isAdjustingMotor]);
+  }, [isAdjustingMotor, baselineKey]);
+
+  useEffect(() => {
+    fetchBaselineStatus(baselineKey);
+  }, [baselineKey]);
 
   useEffect(() => {
     if (!recordingStatus.is_recording) return;
@@ -1156,7 +1256,7 @@ function App() {
               <span className="stream-histogram-label">
                 HIST (LOG){liveProcessing.roi && (liveProcessing.roi[2] !== 1920 || liveProcessing.roi[3] !== 1080) ? ` • ROI ${liveProcessing.roi[2]}x${liveProcessing.roi[3]}` : ''} • {liveProcessing.stride || 4}x
               </span>
-              <canvas ref={histCanvasRef} width={512} height={48} className="stream-histogram-canvas" />
+              <canvas ref={histCanvasRef} width={512} height={54} className="stream-histogram-canvas" />
             </div>
           )}
         </div>
@@ -1815,6 +1915,68 @@ function App() {
                 >
                   Auto (1)
                 </button>
+              </div>
+            </div>
+
+            {/* Setting-Indexed Baseline Dark Calibration Control */}
+            <div className="control-group" style={{ marginBottom: '14px', paddingBottom: '10px', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ margin: 0, fontWeight: 600, fontSize: '12px' }}>
+                  Baseline ({baselineKey})
+                </label>
+                {baselineStatus.exists ? (
+                  <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>
+                    Saved
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '11px', color: '#f59e0b' }}>
+                    No baseline
+                  </span>
+                )}
+              </div>
+              <div className="preset-row" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className={baselineStatus.exists ? '' : 'active'}
+                  onClick={handleCaptureBaseline}
+                  disabled={baselineStatus.is_capturing}
+                  title="Cover lens with cap before clicking Capture to record the fixed dark offset baseline for this specific camera setting."
+                  style={{ flex: 1.2 }}
+                >
+                  {baselineStatus.is_capturing ? 'Capturing...' : (baselineStatus.exists ? 'Recapture' : 'Capture')}
+                </button>
+                <button
+                  type="button"
+                  className={baselineStatus.subtract ? 'active' : ''}
+                  onClick={handleToggleSubtract}
+                  disabled={!baselineStatus.exists}
+                  title={baselineStatus.exists ? (baselineStatus.subtract ? "Baseline subtraction active (click to disable)" : "Click to enable baseline subtraction") : "Capture a baseline for this setting first to enable subtraction"}
+                  style={{ flex: 1.2 }}
+                >
+                  {baselineStatus.subtract ? 'Subtract: ON' : 'Subtract'}
+                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '2px' }}>
+                  <span style={{ fontSize: '11px', color: '#8b949e' }}>Pedestal:</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={pedestalInput}
+                    onChange={e => handleSetPedestal(parseInt(e.target.value) || 0)}
+                    style={{
+                      width: '44px',
+                      padding: '4px 4px',
+                      fontSize: '12px',
+                      background: '#0d1117',
+                      border: '1px solid rgba(255, 255, 255, 0.2)',
+                      borderRadius: '4px',
+                      color: '#c9d1d9',
+                      textAlign: 'center'
+                    }}
+                    title="Fixed positive pedestal added after baseline subtraction to prevent zero-clipping (default: 10)"
+                  />
+                </div>
               </div>
             </div>
 

@@ -173,6 +173,16 @@ class AstroPipeline:
         self.calibration_meta: Optional[Dict[str, Any]] = None
         self._load_existing_calibration()
 
+        # Setting-Indexed Dark Baseline Calibration State
+        self.baseline_subtract: bool = False
+        self.baseline_pedestal: float = 10.0
+        self.active_baseline: Optional[np.ndarray] = None
+        self.active_baseline_key: str = ""
+        self.is_capturing_baseline: bool = False
+        self.baseline_capture_target: int = 10
+        self.baseline_capture_key: str = ""
+        self.baseline_capture_frames: List[np.ndarray] = []
+
         # Start background processing thread
         self.thread = threading.Thread(target=self._processing_loop, daemon=True)
         self.thread.start()
@@ -210,15 +220,28 @@ class AstroPipeline:
         completed_count = 0
 
         with self.lock:
+            # Handle baseline capture if active
+            if self.is_capturing_baseline:
+                self.baseline_capture_frames.append(frame.copy())
+                if len(self.baseline_capture_frames) >= self.baseline_capture_target:
+                    self._finalize_baseline_capture()
+
             # Handle Black Calibration collection if active
             if self.is_calibrating:
                 self._calib_frames.append(frame.copy())
                 if len(self._calib_frames) >= self.calib_target_frames:
                     self._finalize_black_calibration()
 
+            # Baseline subtraction with fixed positive pedestal (e.g. +10.0)
+            if self.baseline_subtract and self.active_baseline is not None and self.active_baseline.shape == frame.shape:
+                calibrated_f32 = frame.astype(np.float32) - self.active_baseline + self.baseline_pedestal
+                proc_frame = np.clip(calibrated_f32, 0.0, 255.0).astype(np.uint8)
+            else:
+                proc_frame = frame
+
             # 1. Star peak detection & corrupted frame filter (conditional for speed):
             if self.enable_luminance_check or self.enable_corrupted_filter:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+                gray = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2GRAY) if proc_frame.ndim == 3 else proc_frame
                 blurred = cv2.blur(gray, (3, 3))
                 min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(blurred)
                 if self.enable_luminance_check:
@@ -254,15 +277,15 @@ class AstroPipeline:
 
             # Continuous Live Block Accumulation (1x = raw, 10x, 25x, 100x)
             if self.accumulation_count <= 1:
-                self.latest_frame = frame
+                self.latest_frame = proc_frame
                 self.acc_buffer = None
                 self.acc_count = 1
             else:
-                if self.acc_buffer is None or self.acc_buffer.shape != frame.shape:
-                    self.acc_buffer = frame.astype(np.float32)
+                if self.acc_buffer is None or self.acc_buffer.shape != proc_frame.shape:
+                    self.acc_buffer = proc_frame.astype(np.float32)
                     self.acc_count = 1
                 else:
-                    self.acc_buffer += frame.astype(np.float32)
+                    self.acc_buffer += proc_frame.astype(np.float32)
                     self.acc_count += 1
 
                 # Draw current accumulation divided by current count into the view canvas
@@ -539,6 +562,96 @@ class AstroPipeline:
 
             event_logger.log("Black calibration cleared.")
             return {"success": True, "calibrated": False}
+
+    def start_baseline_capture(self, key: str, frames: int = 10) -> Dict[str, Any]:
+        """Starts capturing frames with cap on to compute dark baseline for a specific setting key."""
+        with self.lock:
+            self.is_capturing_baseline = True
+            self.baseline_capture_target = max(3, min(30, int(frames)))
+            self.baseline_capture_key = key
+            self.baseline_capture_frames.clear()
+            event_logger.log(f"Baseline capture started for {key} ({self.baseline_capture_target} frames, cap on).")
+            return {
+                "success": True,
+                "is_capturing": True,
+                "key": key,
+                "target_frames": self.baseline_capture_target
+            }
+
+    def _finalize_baseline_capture(self):
+        """Averages collected dark frames, saves the baseline to disk, and enables subtraction."""
+        if not self.baseline_capture_frames:
+            self.is_capturing_baseline = False
+            return
+        
+        frames = np.array(self.baseline_capture_frames, dtype=np.float32)
+        master_baseline = np.mean(frames, axis=0)
+        
+        key = self.baseline_capture_key or "default"
+        baselines_dir = os.path.join(self.recorder.base_dir, "calibration", "baselines")
+        os.makedirs(baselines_dir, exist_ok=True)
+        file_path = os.path.join(baselines_dir, f"{key}.npy")
+        try:
+            np.save(file_path, master_baseline)
+            event_logger.log(f"Saved baseline for {key} ({len(frames)} frames averaged).")
+        except Exception as e:
+            event_logger.log(f"Error saving baseline {key}: {e}")
+            
+        self.active_baseline = master_baseline
+        self.active_baseline_key = key
+        self.baseline_subtract = True  # Automatically enable subtraction after capturing
+        self.is_capturing_baseline = False
+        self.baseline_capture_frames.clear()
+
+    def check_baseline_status(self, key: str) -> Dict[str, Any]:
+        """Checks if a baseline exists on disk for a given setting key and reports status."""
+        baselines_dir = os.path.join(self.recorder.base_dir, "calibration", "baselines")
+        file_path = os.path.join(baselines_dir, f"{key}.npy")
+        exists = os.path.exists(file_path)
+        
+        with self.lock:
+            if exists and self.active_baseline_key != key:
+                try:
+                    self.active_baseline = np.load(file_path)
+                    self.active_baseline_key = key
+                except Exception as e:
+                    event_logger.log(f"Error loading baseline {key}: {e}")
+            elif not exists and self.active_baseline_key == key:
+                self.active_baseline = None
+                self.active_baseline_key = ""
+                
+            return {
+                "key": key,
+                "exists": exists,
+                "subtract": self.baseline_subtract,
+                "pedestal": self.baseline_pedestal,
+                "is_capturing": self.is_capturing_baseline,
+                "active_key": self.active_baseline_key
+            }
+
+    def set_baseline_config(self, subtract: Optional[bool] = None, pedestal: Optional[float] = None, key: Optional[str] = None) -> Dict[str, Any]:
+        """Updates baseline subtraction toggle, pedestal value, or active setting key."""
+        baselines_dir = os.path.join(self.recorder.base_dir, "calibration", "baselines")
+        with self.lock:
+            if subtract is not None:
+                self.baseline_subtract = bool(subtract)
+                event_logger.log(f"Baseline subtract set to {self.baseline_subtract}")
+            if pedestal is not None:
+                self.baseline_pedestal = max(0.0, min(100.0, float(pedestal)))
+                event_logger.log(f"Baseline pedestal set to {self.baseline_pedestal}")
+            if key is not None and key != self.active_baseline_key:
+                file_path = os.path.join(baselines_dir, f"{key}.npy")
+                if os.path.exists(file_path):
+                    try:
+                        self.active_baseline = np.load(file_path)
+                        self.active_baseline_key = key
+                    except Exception as e:
+                        event_logger.log(f"Error loading baseline {key}: {e}")
+                else:
+                    self.active_baseline = None
+                    self.active_baseline_key = key
+                    
+        return self.check_baseline_status(self.active_baseline_key or key or "")
 
     def set_n_avg(self, n):
         """Backwards compatibility for legacy average calls."""
