@@ -61,10 +61,8 @@ class MockCamera:
         self.sim_drift_angle = np.pi
 
         self.radius = 8
-        self.noise_canvas = np.clip(
-            24.0 + np.random.normal(0.0, 2.5, (self.height + 64, self.width + 64, 3)),
-            0.0, 255.0
-        ).astype(np.uint8)
+        # Clean sensor baseline without Gaussian noise (matching SV205 dark pedestal)
+        self.base_frame = np.full((self.height, self.width, 3), 20, dtype=np.uint8)
         self._fallback_patches = self._setup_star_patches()
         self.star_patches = self._fallback_patches
 
@@ -75,7 +73,7 @@ class MockCamera:
         self._update_motion()
         self._recenter()
         self._reload_sky_async()
-        self.raw_frame: Optional[np.ndarray] = None
+        self.raw_frame: Optional[np.ndarray] = self.base_frame.copy()
 
         self.thread = threading.Thread(target=self._sim_loop, daemon=True)
         self.thread.start()
@@ -483,28 +481,18 @@ class MockCamera:
                 self.raw_frame = frame
                 self.frame_id += 1
 
-            # Frame rate is tied directly to exposure integration time:
-            # 1 unit = 100 µs (0.0001 s) -> FPS = 10000 / exposure.
-            # e.g.:
-            #   exposure = 100  (10 ms)  -> 100 FPS
-            #   exposure = 200  (20 ms)  -> 50 FPS
-            #   exposure = 300  (30 ms)  -> 33.3 FPS
-            #   exposure = 500  (50 ms)  -> 20 FPS
-            #   exposure = 1000 (100 ms) -> 10 FPS
-            #   exposure = 5000 (500 ms) -> 2 FPS
-            #   exposure = 10000 (1.0 s) -> 1 FPS
+            # Hardware-realistic rate limit: SV205 over USB 2.0 physically caps at 30 FPS (~33.3 ms).
+            # 1 unit = 100 µs (0.0001 s). For long exposures, frame interval scales with integration time.
             exp_val = float(self.params.get("exposure", 300))
-            exp_sec = max(exp_val * 0.0001, 0.005)
+            exp_sec = max(exp_val * 0.0001, 1.0 / 30.0)
 
             elapsed = time.perf_counter() - t_start
-            sleep_time = max(0.0005, exp_sec - elapsed)
+            sleep_time = max(0.005, exp_sec - elapsed)
             time.sleep(sleep_time)
 
     def _generate_mock_frame(self, duty: float) -> np.ndarray:
-        # Dynamic slice from precomputed noise canvas to simulate sensor read noise
-        oy = (self.frame_id * 17) % 64
-        ox = (self.frame_id * 29) % 64
-        frame = self.noise_canvas[oy : oy + self.height, ox : ox + self.width].copy()
+        # Fast clean sensor baseline (no high-entropy boiling noise)
+        frame = self.base_frame.copy()
 
         # 1. Exposure and Gain controls
         exp_val = float(self.params.get("exposure", 300))
@@ -516,7 +504,6 @@ class MockCamera:
 
         cx = int(self.pos_x)
         cy = int(self.pos_y)
-        r = self.radius
 
         for sx, sy, patch in self.star_patches:
             fx = sx - cx
@@ -537,42 +524,21 @@ class MockCamera:
             elif diff < 0:
                 frame = cv2.subtract(frame, -diff)
 
-        # 3. Contrast (S-Curve)
-        contrast_val = float(self.params.get("contrast", 32))
-        if contrast_val != 32:
-            slope = contrast_val / 32.0
-            x = np.arange(256, dtype=np.float32)
-            lut = np.clip(128.0 + (x - 128.0) * slope, 0.0, 255.0).astype(np.uint8)
-            frame = cv2.LUT(frame, lut)
-
-        # 4. Sharpness (Edge Enhancement)
-        sharpness_val = float(self.params.get("sharpness", 0))
-        if sharpness_val > 0:
-            k = sharpness_val * 0.35
-            kernel = np.array([
-                [0,    -k,          0],
-                [-k,   1.0 + 4 * k, -k],
-                [0,    -k,          0]
-            ], dtype=np.float32)
-            frame = cv2.filter2D(frame, -1, kernel)
-
-        # 5. Saturation (Chroma)
+        # 3. Saturation (Monochrome toggle)
         saturation_val = float(self.params.get("saturation", 64))
         if saturation_val == 0:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        elif saturation_val != 64:
-            sat_scale = max(saturation_val / 64.0, 0.0)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[:, :, None].astype(np.float32)
-            f_flt = frame.astype(np.float32)
-            frame = np.clip(gray + (f_flt - gray) * sat_scale, 0.0, 255.0).astype(np.uint8)
 
-        # 6. Gamma (Power-law tone curve)
+        # 4. Optional Tone Curves (Contrast / Gamma) - only when actively modified
+        contrast_val = float(self.params.get("contrast", 32))
         gamma_val = float(self.params.get("gamma", 100))
-        if gamma_val != 100 and gamma_val > 0:
-            power = 100.0 / gamma_val
+        if contrast_val not in (32, 50) or (gamma_val != 100 and gamma_val > 0):
+            slope = (contrast_val / 32.0) if contrast_val not in (32, 50) else 1.0
+            power = (100.0 / gamma_val) if (gamma_val != 100 and gamma_val > 0) else 1.0
             x = np.arange(256, dtype=np.float32) / 255.0
-            lut = np.clip((x ** power) * 255.0, 0.0, 255.0).astype(np.uint8)
+            lut = np.clip(((x ** power) - 0.5) * slope + 0.5, 0.0, 1.0)
+            lut = (lut * 255.0).astype(np.uint8)
             frame = cv2.LUT(frame, lut)
 
         return frame
@@ -625,6 +591,8 @@ class MockCamera:
 
     def close(self):
         self.is_running = False
+        if hasattr(self, "thread") and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
         try:
             self.nav.unsubscribe(self._on_nav_change)
         except Exception:

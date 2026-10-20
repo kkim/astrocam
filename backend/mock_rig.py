@@ -51,16 +51,14 @@ class MockAstroRig(BaseAstroRig):
         self.sim_drift_angle = self.camera_angle  # Perfectly aligned to RA axis (perfect polar alignment)
 
         self.radius = 5
-        self.noise_canvas = np.clip(
-            24.0 + np.random.normal(0.0, 2.5, (self.height + 64, self.width + 64, 3)),
-            0.0, 255.0
-        ).astype(np.uint8)
+        # Clean sensor baseline without Gaussian noise (matching SV205 dark pedestal)
+        self.base_frame = np.full((self.height, self.width, 3), 20, dtype=np.uint8)
         self.star_patches = self._setup_star_patches()
         self.frame_id = 0
         self.start_time = time.time()
 
         # Main simulation thread
-        self.raw_frame = None
+        self.raw_frame = self.base_frame.copy()
         self.thread = threading.Thread(target=self._sim_loop, daemon=True)
         self.thread.start()
 
@@ -115,17 +113,17 @@ class MockAstroRig(BaseAstroRig):
                 self.raw_frame = frame
                 self.frame_id += 1
 
+            # Hardware-realistic rate limit: SV205 over USB 2.0 physically caps at 30 FPS (~33.3 ms).
             exp_val = float(self.params.get("exposure", 300))
-            exp_sec = max(exp_val * 0.0001, 0.005)
+            exp_sec = max(exp_val * 0.0001, 1.0 / 30.0)
 
             elapsed = time.perf_counter() - t_start
-            sleep_time = max(0.0005, exp_sec - elapsed)
+            sleep_time = max(0.005, exp_sec - elapsed)
             time.sleep(sleep_time)
 
     def _generate_mock_frame(self):
-        oy = (self.frame_id * 17) % 64
-        ox = (self.frame_id * 29) % 64
-        frame = self.noise_canvas[oy : oy + self.height, ox : ox + self.width].copy()
+        # Fast clean sensor baseline (matching SV205 dark pedestal, no boiling Gaussian noise)
+        frame = self.base_frame.copy()
         
         exp_val = float(self.params.get("exposure", 300))
         gain_val = float(self.params.get("gain", 0))
@@ -154,28 +152,17 @@ class MockAstroRig(BaseAstroRig):
             elif diff < 0:
                 frame = cv2.subtract(frame, -diff)
 
-        contrast_val = float(self.params.get("contrast", 50))
-        if contrast_val != 50:
-            slope = contrast_val / 50.0
-            x = np.arange(256, dtype=np.float32)
-            lut = np.clip(128.0 + (x - 128.0) * slope, 0.0, 255.0).astype(np.uint8)
-            frame = cv2.LUT(frame, lut)
-
-        sharpness_val = float(self.params.get("sharpness", 0))
-        if sharpness_val > 0:
-            k = sharpness_val * 0.35
-            kernel = np.array([[0, -k, 0], [-k, 1.0 + 4 * k, -k], [0, -k, 0]], dtype=np.float32)
-            frame = cv2.filter2D(frame, -1, kernel)
-
         saturation_val = float(self.params.get("saturation", 64))
         if saturation_val == 0:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-        elif saturation_val != 64:
-            sat_scale = max(saturation_val / 64.0, 0.0)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[:, :, None].astype(np.float32)
-            f_flt = frame.astype(np.float32)
-            frame = np.clip(gray + (f_flt - gray) * sat_scale, 0.0, 255.0).astype(np.uint8)
+
+        contrast_val = float(self.params.get("contrast", 50))
+        if contrast_val != 50 and contrast_val != 32:
+            slope = contrast_val / 50.0
+            x = np.arange(256, dtype=np.float32)
+            lut = np.clip(128.0 + (x - 128.0) * slope, 0.0, 255.0).astype(np.uint8)
+            frame = cv2.LUT(frame, lut)
 
         return frame
 
@@ -220,6 +207,8 @@ class MockAstroRig(BaseAstroRig):
     def close(self):
         self.is_running = False
         self.stop_ramping.set()
+        if hasattr(self, "thread") and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
 
     def set_camera_angle(self, angle_deg):
         with self.lock:
