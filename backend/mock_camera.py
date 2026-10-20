@@ -98,6 +98,25 @@ class MockCamera:
             patch = np.repeat(prof[:, :, None], 3, axis=2)
         return patch.astype(np.float32)
 
+    def _create_ncp_marker_patch(self, size: int = 15, peak: float = 220.0,
+                                 color: Optional[Tuple[float, float, float]] = (1.0, 0.95, 0.70)) -> np.ndarray:
+        """
+        Creates an optical '+' reticle patch indicating the True North Celestial Pole.
+        - size: odd integer (default 15px)
+        - peak: peak intensity of the reticle lines
+        - color: (B, G, R) color tint (default: subtle celestial blue-white / cyan tint)
+        """
+        center = size // 2
+        arm = 5
+        patch = np.zeros((size, size, 3), dtype=np.float32)
+        patch[center, center - arm : center + arm + 1, :] = peak
+        patch[center - arm : center + arm + 1, center, :] = peak
+        if color is not None:
+            patch[:, :, 0] *= color[0]
+            patch[:, :, 1] *= color[1]
+            patch[:, :, 2] *= color[2]
+        return cv2.GaussianBlur(patch, (3, 3), 0.7)
+
     def _create_saturn_patch(self, globe_r: float) -> np.ndarray:
         """
         Realistic Saturn rendered in exact proportion to the lens focal length and plate scale:
@@ -328,6 +347,7 @@ class MockCamera:
             patches = []
             visible = []  # (mag, name) of objects landing on the simulated canvas
             planet_names_set = set(PLANET_NAMES.values())
+            polaris_xy = None
 
             for obj in all_objects:
                 ra, dec, mag, name = obj[0], obj[1], obj[2], obj[3]
@@ -368,6 +388,38 @@ class MockCamera:
 
                 patches.append((x, y, patch))
                 visible.append((float(mag), name))
+                if name == "Polaris":
+                    polaris_xy = (x, y)
+
+            if polaris_xy is None and sky.get("target") == "Polaris":
+                polaris_xy = (int(round(self.full_width / 2)), int(round(self.full_height / 2)))
+
+            # True North Celestial Pole (NCP) marker: Dec = +90.0°
+            ncp_patch = self._create_ncp_marker_patch()
+            ncp_pr = ncp_patch.shape[0] // 2
+            ncp_pos = None
+
+            # 1. Project Dec = +90° using gnomonic projection if pointing in northern sky (dec0 > 0)
+            if dec0 > 0.0:
+                eta_ncp = np.cos(dec0) / np.sin(dec0)
+                x_ncp = int(round(self.full_width / 2))
+                y_ncp = int(round(self.full_height / 2 - eta_ncp / scale_rad))
+                if (ncp_pr <= x_ncp < self.full_width - ncp_pr and
+                        ncp_pr <= y_ncp < self.full_height - ncp_pr):
+                    ncp_pos = (x_ncp, y_ncp)
+
+            # 2. If astronomical NCP is outside canvas bounds but Polaris is in view (e.g. telephoto lens),
+            # place the '+' marker next to Polaris offset in the direction of True North (due North is upward)
+            if ncp_pos is None and polaris_xy is not None:
+                px, py = polaris_xy
+                offset_y = -45
+                target_x = px
+                target_y = py + offset_y
+                if ncp_pr <= target_x < self.full_width - ncp_pr and ncp_pr <= target_y < self.full_height - ncp_pr:
+                    ncp_pos = (target_x, target_y)
+
+            if ncp_pos is not None:
+                patches.append((ncp_pos[0], ncp_pos[1], ncp_patch))
 
             alt = altitude_deg(sky["ra"], sky["dec"], sky["latitude"], sky["longitude"])
             if gen != self._sky_generation:
@@ -377,6 +429,8 @@ class MockCamera:
             listing = ", ".join(f"{m:.1f} {n}" for m, n in brightest)
             if len(visible) > len(brightest):
                 listing += ", ..."
+            if ncp_pos is not None:
+                listing = (listing + ", True North Pole (+)") if listing else "True North Pole (+)"
             note = f"{len(patches)} stars" + (f" ({listing})" if listing else "") + f"; target altitude {alt:.0f}°"
             if alt < 0:
                 note += " (below horizon)"

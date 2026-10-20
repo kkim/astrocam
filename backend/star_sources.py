@@ -329,6 +329,10 @@ def resolve_name(query: str, lat_deg: float = 37.77, lon_deg: float = -122.42) -
     if key in PLANET_NAMES:
         return get_planet_coords(key, lat_deg, lon_deg)
 
+    # Fast offline shortcut for North Celestial Pole
+    if key in ("ncp", "north pole", "true north pole", "north celestial pole"):
+        return ("North Celestial Pole", 0.0, 90.0)
+
     # 2. Astronomical coordinates via Sesame/SIMBAD
     from astropy.coordinates import SkyCoord
     from astropy.utils.data import conf
