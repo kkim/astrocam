@@ -345,7 +345,6 @@ class MockCamera:
             patches = []
             visible = []  # (mag, name) of objects landing on the simulated canvas
             planet_names_set = set(PLANET_NAMES.values())
-            polaris_xy = None
 
             for obj in all_objects:
                 ra, dec, mag, name = obj[0], obj[1], obj[2], obj[3]
@@ -386,18 +385,13 @@ class MockCamera:
 
                 patches.append((x, y, patch))
                 visible.append((float(mag), name))
-                if name == "Polaris":
-                    polaris_xy = (x, y)
-
-            if polaris_xy is None and sky.get("target") == "Polaris":
-                polaris_xy = (int(round(self.full_width / 2)), int(round(self.full_height / 2)))
 
             # True North Celestial Pole (NCP) marker: Dec = +90.0°
             ncp_patch = self._create_ncp_marker_patch()
             ncp_pr = ncp_patch.shape[0] // 2
             ncp_pos = None
 
-            # 1. Project Dec = +90° using gnomonic projection if pointing in northern sky (dec0 > 0)
+            # Strictly astronomical gnomonic projection for Dec = +90°
             if dec0 > 0.0:
                 eta_ncp = np.cos(dec0) / np.sin(dec0)
                 x_ncp = int(round(self.full_width / 2))
@@ -405,19 +399,7 @@ class MockCamera:
                 if (ncp_pr <= x_ncp < self.full_width - ncp_pr and
                         ncp_pr <= y_ncp < self.full_height - ncp_pr):
                     ncp_pos = (x_ncp, y_ncp)
-
-            # 2. If astronomical NCP is outside canvas bounds but Polaris is in view (e.g. telephoto lens),
-            # place the '+' marker next to Polaris offset in the direction of True North (due North is upward)
-            if ncp_pos is None and polaris_xy is not None:
-                px, py = polaris_xy
-                offset_y = -45
-                target_x = px
-                target_y = py + offset_y
-                if ncp_pr <= target_x < self.full_width - ncp_pr and ncp_pr <= target_y < self.full_height - ncp_pr:
-                    ncp_pos = (target_x, target_y)
-
-            if ncp_pos is not None:
-                patches.append((ncp_pos[0], ncp_pos[1], ncp_patch))
+                    patches.append((x_ncp, y_ncp, ncp_patch))
 
             alt = altitude_deg(sky["ra"], sky["dec"], sky["latitude"], sky["longitude"])
             if gen != self._sky_generation:
