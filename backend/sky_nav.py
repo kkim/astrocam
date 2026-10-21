@@ -190,20 +190,26 @@ def get_sky_nav() -> SkyNav:
         return _nav
 
 
-def write_nav_sidecar(image_path: str):
-    """Stores the current navigation snapshot as <image_path>.nav.json next to a captured image."""
+def write_nav_sidecar(image_path: str, camera_settings: Optional[Dict[str, Any]] = None):
+    """Stores the current navigation snapshot and camera settings as <image_path>.nav.json next to a captured image."""
     try:
+        data = get_sky_nav().snapshot()
+        if camera_settings:
+            data["camera_settings"] = camera_settings
         with open(image_path + ".nav.json", "w") as f:
-            json.dump(get_sky_nav().snapshot(), f)
+            json.dump(data, f, indent=2)
     except Exception as e:
         event_logger.log(f"Could not save navigation info for {os.path.basename(image_path)}: {e}")
 
 
-def write_session_nav(session_dir: str):
-    """Stores the current navigation snapshot as nav.json inside a recording session folder."""
+def write_session_nav(session_dir: str, camera_settings: Optional[Dict[str, Any]] = None):
+    """Stores the current navigation snapshot and camera settings as nav.json inside a recording session folder."""
     try:
+        data = get_sky_nav().snapshot()
+        if camera_settings:
+            data["camera_settings"] = camera_settings
         with open(os.path.join(session_dir, "nav.json"), "w") as f:
-            json.dump(get_sky_nav().snapshot(), f)
+            json.dump(data, f, indent=2)
     except Exception as e:
         event_logger.log(f"Could not save navigation info for {os.path.basename(session_dir)}: {e}")
 

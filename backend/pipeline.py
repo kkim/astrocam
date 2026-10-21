@@ -959,6 +959,21 @@ class AstroPipeline:
             self.last_v = v_k
             self.last_d = d_k
 
+    def get_full_camera_settings(self) -> Dict[str, Any]:
+        """Returns active camera and pipeline settings for capture metadata."""
+        params: Dict[str, Any] = {}
+        if hasattr(self.rig, "get_camera_params"):
+            try:
+                params = dict(self.rig.get_camera_params())
+            except Exception:
+                pass
+        params["accumulation_count"] = self.accumulation_count
+        if self.baseline_subtract:
+            params["baseline_subtract"] = True
+            params["baseline_pedestal"] = self.baseline_pedestal
+            params["baseline_key"] = self.active_baseline_key
+        return params
+
     def capture_frame(self):
         """
         Captures the latest processed image frame from the pipeline and saves it 
@@ -985,12 +1000,13 @@ class AstroPipeline:
             else:
                 filename = f"cap_{timestamp}.jpg"
                 save_frame = self.latest_frame.copy()
+            cam_settings = self.get_full_camera_settings()
         
         filepath = os.path.join(self.sequence_info["directory"], filename)
         if cv2.imwrite(filepath, save_frame):
             try:
                 from sky_nav import write_nav_sidecar
-                write_nav_sidecar(filepath)
+                write_nav_sidecar(filepath, camera_settings=cam_settings)
             except Exception:
                 pass
             event_logger.log(f"Manual capture saved: {filename}")
@@ -1020,14 +1036,16 @@ class AstroPipeline:
         """
         while self.sequence_info["count"] < self.sequence_info["total"] and not self.sequence_stop_event.is_set():
             if time.time() - self.sequence_info["last_capture_time"] >= self.sequence_info["interval"]:
-                with self.lock: frame = self.latest_frame.copy() if self.latest_frame is not None else None
+                with self.lock:
+                    frame = self.latest_frame.copy() if self.latest_frame is not None else None
+                    cam_settings = self.get_full_camera_settings()
                 if frame is not None:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
                     filepath = os.path.join(self.sequence_info["directory"], f"seq_{timestamp}.jpg")
                     if cv2.imwrite(filepath, frame):
                         try:
                             from sky_nav import write_nav_sidecar
-                            write_nav_sidecar(filepath)
+                            write_nav_sidecar(filepath, camera_settings=cam_settings)
                         except Exception:
                             pass
                         self.sequence_info["count"] += 1
@@ -1052,9 +1070,11 @@ class AstroPipeline:
             self.accumulation_count = max(1, int(count))
             self.acc_buffer = None
             self.acc_count = 0
+            cam_settings = self.get_full_camera_settings()
         return self.recorder.start_recording(
             accumulation_count=self.accumulation_count,
-            file_format=file_format
+            file_format=file_format,
+            camera_settings=cam_settings
         )
 
     def stop_recording(self):

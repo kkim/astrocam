@@ -124,7 +124,14 @@ class PanoramaManager:
             
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"panorama_{ts}.jpg"
-        cv2.imwrite(os.path.join("/home/kio/projects/astrocam/captures", filename), final)
+        out_path = os.path.join("/home/kio/projects/astrocam/captures", filename)
+        cv2.imwrite(out_path, final)
+        try:
+            from sky_nav import write_nav_sidecar
+            cam_params = self.rig.get_camera_params() if hasattr(self.rig, "get_camera_params") else {}
+            write_nav_sidecar(out_path, camera_settings=cam_params)
+        except Exception:
+            pass
         event_logger.log(f"Panorama complete: {filename}")
 
     def get_status(self):

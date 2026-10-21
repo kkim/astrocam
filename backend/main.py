@@ -93,12 +93,14 @@ def list_captures():
 
         # Nav info (target / coordinates)
         target_name = ""
+        camera_settings = {}
         session_nav_file = os.path.join(s_dir, "nav.json")
         if os.path.exists(session_nav_file):
             try:
                 with open(session_nav_file, "r") as f:
                     s_nav = json.load(f)
                     target_name = s_nav.get("target", "")
+                    camera_settings = s_nav.get("camera_settings", {})
             except Exception:
                 pass
 
@@ -109,6 +111,7 @@ def list_captures():
             "type": "sequence",
             "name": s_name,
             "target": target_name,
+            "camera_settings": camera_settings,
             "time": time_str,
             "date": date_str,
             "datetime": dt_str,
@@ -137,12 +140,14 @@ def list_captures():
         fmt = filename.rsplit(".", 1)[-1].lower()
 
         target_name = ""
+        camera_settings = {}
         sidecar_path = filepath + ".nav.json"
         if os.path.exists(sidecar_path):
             try:
                 with open(sidecar_path, "r") as f:
                     c_nav = json.load(f)
                     target_name = c_nav.get("target", "")
+                    camera_settings = c_nav.get("camera_settings", {})
             except Exception:
                 pass
 
@@ -151,6 +156,7 @@ def list_captures():
             "type": "image",
             "name": filename,
             "target": target_name,
+            "camera_settings": camera_settings,
             "time": dt.strftime("%H:%M:%S"),
             "date": dt.strftime("%Y-%m-%d"),
             "datetime": dt.strftime("%Y-%m-%d %H:%M:%S"),

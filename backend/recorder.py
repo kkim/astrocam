@@ -51,7 +51,8 @@ class StreamRecorder:
         self,
         accumulation_count: Optional[int] = None,
         accumulation_ms: Optional[int] = None,
-        file_format: Optional[str] = None
+        file_format: Optional[str] = None,
+        camera_settings: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Starts a new recording session, creating a timestamped folder inside captures/.
@@ -93,7 +94,7 @@ class StreamRecorder:
             os.makedirs(self.session_path, exist_ok=True)
             try:
                 from sky_nav import write_session_nav
-                write_session_nav(self.session_path)
+                write_session_nav(self.session_path, camera_settings=camera_settings)
             except Exception:
                 pass
 

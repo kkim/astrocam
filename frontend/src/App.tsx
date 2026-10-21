@@ -142,6 +142,7 @@ interface GalleryItem {
   url: string;
   first_frame_url?: string;
   format?: string;
+  camera_settings?: Record<string, any>;
   has_mosaic?: boolean;
   mosaic_status?: 'ready' | 'processing' | 'none';
   mosaic_url?: string;
@@ -1485,6 +1486,13 @@ function App() {
                         {item.target && (
                           <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: '11px', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             ✨ {item.target}
+                          </div>
+                        )}
+                        {item.camera_settings && Object.keys(item.camera_settings).length > 0 && (
+                          <div style={{ fontSize: '10px', color: '#8b949e', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {item.camera_settings.exposure !== undefined ? `${Math.round(item.camera_settings.exposure * 0.1)}ms` : ''}
+                            {item.camera_settings.gain !== undefined ? ` · G${item.camera_settings.gain}` : ''}
+                            {item.camera_settings.accumulation_count > 1 ? ` · ${item.camera_settings.accumulation_count}x` : ''}
                           </div>
                         )}
                         <div className="capture-time-row">
