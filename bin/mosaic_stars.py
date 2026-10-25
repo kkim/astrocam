@@ -10,6 +10,7 @@ renders to reveal fine faint details.
 import os
 import sys
 import glob
+import json
 import time
 import argparse
 from typing import Optional, Tuple, List, Dict, Any
@@ -26,11 +27,115 @@ except ImportError:
     raise
 
 
+def write_progress(
+    output_dir: Optional[str],
+    stage: str,
+    step: int,
+    total_steps: int,
+    current: int,
+    total: int,
+    percent: float,
+    message: str
+) -> None:
+    """Atomically writes live progress state to .progress.json inside output_dir."""
+    if not output_dir:
+        return
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        p_path = os.path.join(output_dir, ".progress.json")
+        p_tmp = os.path.join(output_dir, ".progress.json.tmp")
+        payload = {
+            "stage": stage,
+            "step": step,
+            "total_steps": total_steps,
+            "current": int(current),
+            "total": int(total),
+            "percent": round(float(percent), 1),
+            "message": message,
+            "timestamp": time.time(),
+        }
+        with open(p_tmp, "w") as f:
+            json.dump(payload, f)
+        os.replace(p_tmp, p_path)
+    except Exception:
+        pass
+
+
+def detect_corruption_stripes(
+    img: np.ndarray,
+    min_stripe_width: int = 60,
+    min_aspect_ratio: float = 3.5,
+    vertical_margin: int = 2,
+) -> List[Tuple[int, int, int, int]]:
+    """
+    Detects horizontal "white stripe" artifacts caused by dropped MJPEG packets.
+
+    When the camera drops USB packets in MJPEG mode, one or more MCU rows
+    (typically 8-16 px tall) decode as a flat/noisy bright band spanning a
+    large part of the frame width. Stars are compact (~10-30 px wide), so
+    stripes are separated from stars by their width and horizontal aspect ratio.
+
+    Args:
+        img: Input frame (grayscale or BGR, uint8 or uint16).
+        min_stripe_width: Minimum horizontal extent (px) of a stripe component.
+        min_aspect_ratio: Minimum width/height ratio of a stripe component.
+        vertical_margin: Extra rows masked above/below each stripe to cover bleed.
+
+    Returns:
+        List of (x0, y0, x1, y1) rectangles (exclusive end) covering each stripe.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    h, w = gray.shape
+    scale = 257.0 if gray.dtype == np.uint16 else 1.0
+
+    gray_f = gray.astype(np.float32)
+    bg_median = float(np.median(gray_f))
+    bg_std = float(np.std(gray_f))
+
+    # A stripe pixel must be well above the sky background
+    thresh = max(bg_median + 3.5 * bg_std, bg_median * 1.8, 90.0 * scale)
+    bright = (gray_f >= thresh).astype(np.uint8)
+    if not np.any(bright):
+        return []
+
+    # Bridge small horizontal gaps inside noisy stripes
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, close_kernel)
+
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(bright, connectivity=8)
+    rects = []
+    for i in range(1, num_labels):
+        x = stats[i, cv2.CC_STAT_LEFT]
+        y = stats[i, cv2.CC_STAT_TOP]
+        cw = stats[i, cv2.CC_STAT_WIDTH]
+        ch = stats[i, cv2.CC_STAT_HEIGHT]
+        aspect = cw / max(ch, 1)
+        if (cw >= min_stripe_width and aspect >= min_aspect_ratio) or cw >= w * 0.25:
+            # Mask the full bounding box: the whole MCU band is unreliable,
+            # including darker gaps inside a noisy stripe.
+            rects.append((
+                int(x),
+                max(0, int(y) - vertical_margin),
+                int(x + cw),
+                min(h, int(y + ch) + vertical_margin),
+            ))
+    return rects
+
+
+def stripe_rects_to_mask(rects: List[Tuple[int, int, int, int]], h: int, w: int) -> np.ndarray:
+    """Rasterizes stripe rectangles into a boolean (h, w) mask (True = corrupted)."""
+    mask = np.zeros((h, w), dtype=bool)
+    for x0, y0, x1, y1 in rects:
+        mask[y0:y1, x0:x1] = True
+    return mask
+
+
 def detect_star_centroid(
     img: np.ndarray,
     min_snr: float = 4.0,
     min_peak_above_bg: float = 8.0,
     patch_radius: int = 15,
+    exclude_mask: Optional[np.ndarray] = None,
 ) -> Optional[Tuple[float, float, float, float]]:
     """
     Locates the bright star with sub-pixel centroid accuracy.
@@ -40,6 +145,8 @@ def detect_star_centroid(
         min_snr: Minimum peak-to-background SNR to qualify as a valid star.
         min_peak_above_bg: Minimum intensity increment above background.
         patch_radius: Radius around the peak pixel used for centroid calculation.
+        exclude_mask: Optional boolean (h, w) mask of pixels (e.g. corruption
+            stripes) that must never be considered part of a star.
         
     Returns:
         (cx, cy, peak_val, bg_val) if star detected, else None.
@@ -50,8 +157,18 @@ def detect_star_centroid(
         gray = img
 
     gray_f = gray.astype(np.float64)
-    bg_val = float(np.median(gray_f))
-    std_val = float(np.std(gray_f))
+    if exclude_mask is not None and np.any(exclude_mask):
+        valid = ~exclude_mask
+        if not np.any(valid):
+            return None
+        bg_val = float(np.median(gray_f[valid]))
+        std_val = float(np.std(gray_f[valid]))
+        # Flatten excluded regions to background so they can't win the peak search
+        gray_f = gray_f.copy()
+        gray_f[exclude_mask] = bg_val
+    else:
+        bg_val = float(np.median(gray_f))
+        std_val = float(np.std(gray_f))
     
     if std_val < 1e-4:
         # Uniform/blank flat frame
@@ -201,6 +318,8 @@ def combine_images(
     defect_mask_path: Optional[str] = None,
     save_individual_renders: bool = True,
     verbose: bool = True,
+    filter_stripes: bool = True,
+    max_stripe_fraction: float = 0.5,
 ) -> Dict[str, Any]:
     """
     Main function to align and mosaic astrophotography images by their bright star.
@@ -216,6 +335,10 @@ def combine_images(
         max_frames: Limit number of frames to process (useful for rapid testing).
         save_individual_renders: Save linear 16-bit, HDR 16-bit, HDR 8-bit, and weight map.
         verbose: Print progress to stdout.
+        filter_stripes: Detect MJPEG packet-loss stripes, exclude them from star
+            detection, and give them zero weight in the mosaic.
+        max_stripe_fraction: Drop a frame entirely if stripes cover more than this
+            fraction of its area.
 
     Returns:
         Dictionary with processing metadata, output paths, and resulting arrays.
@@ -259,9 +382,14 @@ def combine_images(
     if verbose:
         print(f"[*] Step 1/3: Detecting star centroids across {len(valid_files)} frames...")
 
+    write_progress(output_dir, "detecting", 1, 3, 0, len(valid_files), 0.0, f"Starting star detection (0/{len(valid_files)})")
+
     detections = []
     skipped_no_star = 0
+    skipped_corrupt = 0
+    frames_with_stripes = 0
     ref_shape = None
+    channel_counts = {1: 0, 3: 0}
 
     for idx, filepath in enumerate(valid_files):
         img = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
@@ -269,10 +397,24 @@ def combine_images(
             skipped_no_star += 1
             continue
 
+        c = img.shape[2] if len(img.shape) == 3 else 1
+        channel_counts[c] = channel_counts.get(c, 0) + 1
+
         if ref_shape is None:
             ref_shape = img.shape
 
-        res = detect_star_centroid(img)
+        # Detect MJPEG packet-loss stripes; exclude them from star search
+        stripe_rects = detect_corruption_stripes(img) if filter_stripes else []
+        stripe_mask = None
+        if stripe_rects:
+            stripe_mask = stripe_rects_to_mask(stripe_rects, img.shape[0], img.shape[1])
+            frames_with_stripes += 1
+            if float(np.mean(stripe_mask)) > max_stripe_fraction:
+                # Frame is mostly garbage: drop it entirely
+                skipped_corrupt += 1
+                continue
+
+        res = detect_star_centroid(img, exclude_mask=stripe_mask)
         if res is not None:
             cx, cy, peak, bg = res
             detections.append({
@@ -282,23 +424,33 @@ def combine_images(
                 "cy": cy,
                 "peak": peak,
                 "bg": bg,
+                "stripes": stripe_rects,
             })
         else:
             skipped_no_star += 1
 
+        if (idx + 1) % 10 == 0 or (idx + 1) == len(valid_files):
+            step1_pct = ((idx + 1) / len(valid_files)) * 45.0
+            write_progress(output_dir, "detecting", 1, 3, idx + 1, len(valid_files), step1_pct, f"Step 1/3: Star detection ({idx + 1}/{len(valid_files)})")
+
         if verbose and ((idx + 1) % 50 == 0 or (idx + 1) == len(valid_files)):
             pct = (idx + 1) / len(valid_files) * 100.0
-            print(f"    Progress: {idx + 1}/{len(valid_files)} ({pct:.1f}%) | Detected: {len(detections)} | Skipped: {skipped_no_star}")
+            print(f"    Progress: {idx + 1}/{len(valid_files)} ({pct:.1f}%) | Detected: {len(detections)} | Skipped: {skipped_no_star} | Striped: {frames_with_stripes}")
 
     if not detections:
         raise RuntimeError("No stars detected in any of the provided frames.")
 
     if verbose:
-        print(f"[*] Detection complete: {len(detections)} valid frames with guide star, {skipped_no_star} skipped.")
+        print(f"[*] Detection complete: {len(detections)} valid frames with guide star, {skipped_no_star} skipped (no star).")
+        if filter_stripes:
+            print(f"    Corruption stripes: {frames_with_stripes} frames affected (stripe pixels zero-weighted), {skipped_corrupt} frames dropped as mostly corrupt.")
+
+    write_progress(output_dir, "geometry", 2, 3, 1, 1, 48.0, "Step 2/3: Computing canvas geometry")
 
     # Pass 2: Compute canvas geometry and shifts
     h, w = ref_shape[:2]
-    num_channels = ref_shape[2] if len(ref_shape) == 3 else 1
+    # Set mosaic depth based on predominant frame format across detections
+    num_channels = 3 if channel_counts.get(3, 0) > channel_counts.get(1, 0) else 1
     ref_cx = detections[0]["cx"]
     ref_cy = detections[0]["cy"]
 
@@ -370,7 +522,32 @@ def combine_images(
         if frame is None:
             continue
 
+        # Harmonize channel format to match accumulator canvas
+        if num_channels == 1:
+            if frame.ndim == 3:
+                if frame.shape[2] == 4:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
+                else:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            if frame.ndim == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            elif frame.ndim == 3 and frame.shape[2] == 4:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
         frame_f = frame.astype(np.float64)
+
+        # Zero-weight corruption stripes so they never contribute to the mosaic
+        if d.get("stripes"):
+            frame_sensor_weight = sensor_weight.copy()
+            for x0, y0, x1, y1 in d["stripes"]:
+                frame_sensor_weight[y0:y1, x0:x1] = 0.0
+                # Also zero the pixel data so bilinear warping can't bleed
+                # stripe values into neighbouring (valid) canvas pixels
+                frame_f[y0:y1, x0:x1] = 0.0
+        else:
+            frame_sensor_weight = sensor_weight
+
         total_tx = tx + offset_x
         total_ty = ty + offset_y
 
@@ -386,7 +563,7 @@ def combine_images(
         )
 
         warped_weights = cv2.warpAffine(
-            sensor_weight,
+            frame_sensor_weight,
             M,
             (canvas_w, canvas_h),
             flags=cv2.INTER_LINEAR,
@@ -401,9 +578,15 @@ def combine_images(
 
         weight_map += warped_weights
 
+        if (idx + 1) % 10 == 0 or (idx + 1) == len(detections):
+            pct_step3 = 50.0 + ((idx + 1) / len(detections)) * 45.0
+            write_progress(output_dir, "accumulating", 3, 3, idx + 1, len(detections), pct_step3, f"Step 3/3: Accumulating ({idx + 1}/{len(detections)})")
+
         if verbose and ((idx + 1) % 50 == 0 or (idx + 1) == len(detections)):
             pct = (idx + 1) / len(detections) * 100.0
             print(f"    Accumulated: {idx + 1}/{len(detections)} frames ({pct:.1f}%)")
+
+    write_progress(output_dir, "rendering", 3, 3, len(detections), len(detections), 96.0, "Rendering 16-bit HDR outputs...")
 
     # Compute weighted average
     valid_mask = weight_map > 1e-4
@@ -467,6 +650,8 @@ def combine_images(
         output_files["coverage_weights_png"] = p_weights
 
     elapsed = time.time() - t_start
+
+    write_progress(output_dir, "ready", 3, 3, len(detections), len(detections), 100.0, "Mosaic complete")
 
     if verbose:
         print(f"============================================================")
@@ -549,6 +734,11 @@ def parse_args():
         default=None,
         help="Path to defect_mask.npy containing sensor defect map to zero-weight hot pixels",
     )
+    parser.add_argument(
+        "--no-stripe-filter",
+        action="store_true",
+        help="Disable detection/zero-weighting of MJPEG packet-loss stripes",
+    )
     return parser.parse_args()
 
 
@@ -566,4 +756,5 @@ if __name__ == "__main__":
         defect_mask_path=args.defect_mask,
         save_individual_renders=True,
         verbose=True,
+        filter_stripes=not args.no_stripe_filter,
     )

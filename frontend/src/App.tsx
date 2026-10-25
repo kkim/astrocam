@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles, Save } from 'lucide-react';
+import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles, Save, Clock } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -144,9 +144,19 @@ interface GalleryItem {
   format?: string;
   camera_settings?: Record<string, any>;
   has_mosaic?: boolean;
-  mosaic_status?: 'ready' | 'processing' | 'none';
+  mosaic_status?: 'ready' | 'processing' | 'queued' | 'none';
   mosaic_url?: string;
   mosaic_mtime?: number;
+  mosaic_progress?: {
+    percent: number;
+    message?: string;
+    stage?: string;
+    step?: number;
+    total_steps?: number;
+    current?: number;
+    total?: number;
+  };
+  mosaic_queue_pos?: number;
 }
 
 const formatGalleryItem = (item: any): GalleryItem => {
@@ -179,6 +189,8 @@ const formatGalleryItem = (item: any): GalleryItem => {
     url: fullUrl,
     mosaic_url: mosaicUrl,
     mosaic_status: item.mosaic_status || 'none',
+    mosaic_progress: item.mosaic_progress || undefined,
+    mosaic_queue_pos: item.mosaic_queue_pos || 0,
     has_mosaic: !!item.has_mosaic
   };
 };
@@ -1201,7 +1213,15 @@ function App() {
     }
 
     if (item.mosaic_status === 'processing') {
-      showToast('Mosaic is currently being processed. Opening preview...', 2500);
+      const msg = item.mosaic_progress?.message ? `Mosaic: ${item.mosaic_progress.message}` : 'Mosaic is currently being processed.';
+      showToast(`${msg} Opening preview...`, 2500);
+      const targetUrl = item.mosaic_url || item.url;
+      window.open(`${targetUrl}?t=${Date.now()}`, '_blank');
+      return;
+    }
+
+    if (item.mosaic_status === 'queued') {
+      showToast(`Mosaic is queued (#${item.mosaic_queue_pos || 1} in line). It will start automatically once active jobs finish.`, 3000);
       const targetUrl = item.mosaic_url || item.url;
       window.open(`${targetUrl}?t=${Date.now()}`, '_blank');
       return;
@@ -1218,6 +1238,9 @@ function App() {
           ? data.url
           : `${API_BASE}${data.url.startsWith('/') ? '' : '/'}${data.url}`;
         window.open(`${fullUrl}?t=${Date.now()}`, '_blank');
+        if (data.status === 'queued') {
+          showToast(`Mosaic queued (#${data.queue_pos || 1} in line)`, 3000);
+        }
         setTimeout(() => {
           fetch(`${API_BASE}/gallery`)
             .then(r => r.json())
@@ -1439,8 +1462,15 @@ function App() {
               ) : (
                 captures.map(item => {
                   const isSeq = item.type === 'sequence';
+                  const statusDesc = item.mosaic_status === 'ready' 
+                    ? 'Ready (Click to View)' 
+                    : item.mosaic_status === 'processing' 
+                      ? (item.mosaic_progress?.message || 'Processing...') 
+                      : item.mosaic_status === 'queued'
+                        ? `Queued (#${item.mosaic_queue_pos || 1} in line)`
+                        : 'Not Created (Click to Stitch Mosaic)';
                   const titleTip = isSeq
-                    ? `${item.datetime || item.id} • ${item.frames || 1} frames • Mosaic: ${item.mosaic_status === 'ready' ? 'Ready (Click to View)' : item.mosaic_status === 'processing' ? 'Processing (Click to View Preview)' : 'Not Created (Click to Stitch Mosaic)'}`
+                    ? `${item.datetime || item.id} • ${item.frames || 1} frames • Mosaic: ${statusDesc}`
                     : `${item.datetime || item.id} • Single frame`;
 
                   return (
@@ -1461,15 +1491,39 @@ function App() {
                             </div>
                           )}
                           {item.mosaic_status === 'processing' && (
-                            <div className="mosaic-badge processing" title="Mosaic is being processed...">
+                            <div 
+                              className="mosaic-badge processing" 
+                              title={item.mosaic_progress?.message || "Mosaic is being processed..."}
+                            >
                               <RefreshCw size={11} className="spin" />
-                              <span>Processing...</span>
+                              <span>
+                                {item.mosaic_progress && item.mosaic_progress.percent !== undefined && item.mosaic_progress.percent > 0
+                                  ? `${Math.round(item.mosaic_progress.percent)}%`
+                                  : 'Processing...'}
+                              </span>
+                            </div>
+                          )}
+                          {item.mosaic_status === 'queued' && (
+                            <div 
+                              className="mosaic-badge queued" 
+                              title={`Queued (#${item.mosaic_queue_pos || 1} in line)`}
+                            >
+                              <Clock size={11} />
+                              <span>Queued #{item.mosaic_queue_pos || 1}</span>
                             </div>
                           )}
                           {item.mosaic_status === 'none' && (
                             <div className="mosaic-badge none" title="Click thumbnail to stitch mosaic">
                               <Layers size={11} />
                               <span>Stitch Mosaic</span>
+                            </div>
+                          )}
+                          {item.mosaic_status === 'processing' && item.mosaic_progress && (
+                            <div className="mosaic-progress-bar" title={item.mosaic_progress.message}>
+                              <div 
+                                className="mosaic-progress-fill" 
+                                style={{ width: `${Math.min(100, Math.max(4, item.mosaic_progress.percent || 0))}%` }} 
+                              />
                             </div>
                           )}
                         </>

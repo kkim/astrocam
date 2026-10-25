@@ -118,13 +118,15 @@ def list_captures():
             "frames": len(files),
             "first_frame": first_frame,
             "thumbnail": thumb_url,
-            "url": mosaic_info["mosaic_url"] if mosaic_info["mosaic_url"] else (thumb_url if fmt in ("tif", "tiff") else f"/captures/{s_name}/{first_frame}"),
+            "url": mosaic_info["mosaic_url"] if mosaic_info["has_mosaic"] else (thumb_url if fmt in ("tif", "tiff") else f"/captures/{s_name}/{first_frame}"),
             "first_frame_url": f"/captures/{s_name}/{first_frame}",
             "format": fmt,
             "has_mosaic": mosaic_info["has_mosaic"],
             "mosaic_status": mosaic_info["mosaic_status"],
-            "mosaic_url": mosaic_info["mosaic_url"],
+            "mosaic_url": mosaic_info["mosaic_url"] if mosaic_info["has_mosaic"] else None,
             "mosaic_mtime": mosaic_info["mosaic_mtime"],
+            "mosaic_progress": mosaic_info.get("mosaic_progress"),
+            "mosaic_queue_pos": mosaic_info.get("mosaic_queue_pos", 0),
             "mtime": os.path.getmtime(s_dir)
         })
 
@@ -170,6 +172,8 @@ def list_captures():
             "mosaic_status": "none",
             "mosaic_url": None,
             "mosaic_mtime": 0,
+            "mosaic_progress": None,
+            "mosaic_queue_pos": 0,
             "mtime": mtime
         })
 

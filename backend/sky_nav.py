@@ -110,6 +110,19 @@ class SkyNav:
     def set(self, target: Optional[str] = None, **changes) -> bool:
         changed: Set[str] = set()
         with self.lock:
+            if target and ("ra" not in changes or "dec" not in changes):
+                try:
+                    t_name, t_ra, t_dec = resolve_name(target, lat_deg=self.sky["latitude"], lon_deg=self.sky["longitude"])
+                    if "ra" not in changes:
+                        self.sky["ra"] = t_ra
+                        changed.add("ra")
+                    if "dec" not in changes:
+                        self.sky["dec"] = t_dec
+                        changed.add("dec")
+                    target = t_name
+                except Exception:
+                    pass
+
             for k, v in changes.items():
                 if v is None or k not in DEFAULT_SKY or k == "target":
                     continue

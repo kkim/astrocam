@@ -92,6 +92,9 @@ class StreamRecorder:
             self.session_name = f"session_{timestamp}"
             self.session_path = os.path.join(self.base_dir, self.session_name)
             os.makedirs(self.session_path, exist_ok=True)
+            self.is_monochrome = False
+            if camera_settings and camera_settings.get("saturation") == 0:
+                self.is_monochrome = True
             try:
                 from sky_nav import write_session_nav
                 write_session_nav(self.session_path, camera_settings=camera_settings)
@@ -157,8 +160,9 @@ class StreamRecorder:
                 filename = f"{timestamp_str}.{self.file_format}"
                 save_frame = frame
                 if self.file_format in ("tif", "tiff"):
-                    if frame.ndim == 3 and np.array_equal(frame[..., 0], frame[..., 1]) and np.array_equal(frame[..., 0], frame[..., 2]):
-                        save_frame = frame[..., 0]
+                    if (getattr(self, 'is_monochrome', False) or 
+                        (frame.ndim == 3 and np.array_equal(frame[..., 0], frame[..., 1]) and np.array_equal(frame[..., 0], frame[..., 2]))):
+                        save_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
                     if save_frame.dtype == np.uint8:
                         save_frame = (save_frame.astype(np.uint16) * 257)
                 try:
@@ -188,8 +192,10 @@ class StreamRecorder:
 
         avg_float = self.acc_buffer / self.acc_count
         if self.file_format in ("tif", "tiff"):
-            if avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2]):
-                avg_float = avg_float[..., 0]
+            if (getattr(self, 'is_monochrome', False) or 
+                (avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2]))):
+                if avg_float.ndim == 3:
+                    avg_float = cv2.cvtColor(avg_float, cv2.COLOR_BGR2GRAY)
             avg_frame = np.clip(np.round(avg_float * 257.0), 0, 65535).astype(np.uint16)
         else:
             # 8-bit for JPG / PNG

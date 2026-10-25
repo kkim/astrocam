@@ -298,8 +298,11 @@ class AstroPipeline:
                     avg_float = self.acc_buffer / self.acc_count
                     if self.recorder.file_format in ("tif", "tiff"):
                         # If monochrome (e.g. saturation=0 or identical R,G,B), save single channel
-                        if avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2]):
-                            avg_float = avg_float[..., 0]
+                        is_mono = (getattr(self.recorder, 'is_monochrome', False) or 
+                                   (self.get_full_camera_settings().get("saturation") == 0) or
+                                   (avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2])))
+                        if is_mono and avg_float.ndim == 3:
+                            avg_float = cv2.cvtColor(avg_float, cv2.COLOR_BGR2GRAY)
                         completed_stack = np.clip(np.round(avg_float * 257.0), 0, 65535).astype(np.uint16)
                     else:
                         completed_stack = self.latest_frame.copy()
@@ -1083,8 +1086,11 @@ class AstroPipeline:
             if self.recorder.is_recording and self.accumulation_count > 1 and self.acc_buffer is not None and self.acc_count > 0:
                 avg_float = self.acc_buffer / self.acc_count
                 if self.recorder.file_format in ("tif", "tiff"):
-                    if avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2]):
-                        avg_float = avg_float[..., 0]
+                    is_mono = (getattr(self.recorder, 'is_monochrome', False) or 
+                               (self.get_full_camera_settings().get("saturation") == 0) or
+                               (avg_float.ndim == 3 and np.array_equal(avg_float[..., 0], avg_float[..., 1]) and np.array_equal(avg_float[..., 0], avg_float[..., 2])))
+                    if is_mono and avg_float.ndim == 3:
+                        avg_float = cv2.cvtColor(avg_float, cv2.COLOR_BGR2GRAY)
                     stack_img = np.clip(np.round(avg_float * 257.0), 0, 65535).astype(np.uint16)
                 else:
                     stack_img = self.latest_frame.copy()

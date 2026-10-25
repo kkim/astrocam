@@ -34,7 +34,7 @@ def test_stream_recorder_raw_unit():
         assert stop_res["frames"] == 5
         assert stop_res["raw_frames"] == 5
 
-        files = os.listdir(session_dir)
+        files = [f for f in os.listdir(session_dir) if not f.endswith(".json") and not f.startswith(".")]
         assert len(files) == 5
         for f in files:
             assert f.endswith(".jpg")
@@ -66,7 +66,7 @@ def test_stream_recorder_accumulation_unit():
         assert stop_res["frames"] >= 1
         assert stop_res["accumulated_frames"] >= 1
 
-        files = os.listdir(session_dir)
+        files = [f for f in os.listdir(session_dir) if not f.endswith(".json") and not f.startswith(".")]
         assert len(files) >= 1
         for f in files:
             assert f.endswith(".tif")
