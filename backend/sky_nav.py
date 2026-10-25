@@ -110,13 +110,13 @@ class SkyNav:
     def set(self, target: Optional[str] = None, **changes) -> bool:
         changed: Set[str] = set()
         with self.lock:
-            if target and ("ra" not in changes or "dec" not in changes):
+            if target and ("ra" not in changes or "dec" not in changes or changes.get("ra") is None or changes.get("dec") is None):
                 try:
                     t_name, t_ra, t_dec = resolve_name(target, lat_deg=self.sky["latitude"], lon_deg=self.sky["longitude"])
-                    if "ra" not in changes:
+                    if changes.get("ra") is None:
                         self.sky["ra"] = t_ra
                         changed.add("ra")
-                    if "dec" not in changes:
+                    if changes.get("dec") is None:
                         self.sky["dec"] = t_dec
                         changed.add("dec")
                     target = t_name
@@ -148,6 +148,14 @@ class SkyNav:
             elif changed & {"ra", "dec"}:
                 self.sky["target"] = ""  # edited coordinates no longer match a named target
                 changed.add("target")
+
+            if changed & {"ra", "dec", "pixel_size_um", "focal_length_mm", "backend"}:
+                self.status = {
+                    "state": "loading",
+                    "stars": 0,
+                    "message": f"Loading {self.sky['backend']} catalog...",
+                }
+
             self._save()
         for listener in list(self.listeners):
             try:

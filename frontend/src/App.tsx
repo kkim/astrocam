@@ -228,6 +228,8 @@ function App() {
   const [isAdjustingMotor, setIsAdjustingMotor] = useState(false);
   const [prevDuty, setPrevDuty] = useState<number>(85.0);
   const [sky, setSky] = useState<SkyConfig | null>(null);
+  const [skyInputs, setSkyInputs] = useState<Record<string, string>>({});
+  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [targets, setTargets] = useState<TargetItem[]>([]);
   const [searchText, setSearchText] = useState('');
   const [searchMsg, setSearchMsg] = useState('');
@@ -906,8 +908,10 @@ function App() {
       .then(data => { if (Array.isArray(data)) setTargets(data); })
       .catch(e => console.error("Error loading targets:", e));
     // Poll while the catalog is loading so the status line updates
-    const id = setInterval(() => { if (sky?.status?.state === 'loading') loadSky(); }, 1500);
-    return () => clearInterval(id);
+    if (sky?.status?.state === 'loading') {
+      const id = setInterval(loadSky, 800);
+      return () => clearInterval(id);
+    }
   }, [sky?.status?.state]);
 
   // Az/Alt change continuously as the sky rotates, so refresh them periodically
@@ -915,6 +919,37 @@ function App() {
     const id = setInterval(loadSky, 5000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!sky) return;
+    setSkyInputs(prev => {
+      const next = { ...prev };
+      const keys = ['latitude', 'longitude', 'ra', 'dec', 'focal_length_mm', 'pixel_size_um'] as const;
+      for (const k of keys) {
+        if (editingKey !== k || next[k] === undefined) {
+          next[k] = sky[k] !== undefined && sky[k] !== null ? String(sky[k]) : '';
+        }
+      }
+      return next;
+    });
+  }, [sky, editingKey]);
+
+  const getChangedInputs = (): Partial<SkyConfig> => {
+    if (!sky) return {};
+    const changes: Partial<SkyConfig> = {};
+    const keys = ['latitude', 'longitude', 'ra', 'dec', 'focal_length_mm', 'pixel_size_um'] as const;
+    for (const k of keys) {
+      if (skyInputs[k] !== undefined && skyInputs[k] !== '') {
+        const val = parseFloat(skyInputs[k]);
+        if (!isNaN(val) && val !== sky[k]) {
+          (changes as any)[k] = val;
+        }
+      }
+    }
+    return changes;
+  };
+  const unsavedChanges = getChangedInputs();
+  const hasUnsavedInputs = Object.keys(unsavedChanges).length > 0;
 
   const PLANET_NAMES = ['mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'moon', 'sun'];
 
@@ -929,13 +964,14 @@ function App() {
     const query = text.trim();
     if (!query || searching) return;
     setSearchIsOpen(false);
+    setSearchText(query);
 
     // If it's a planet or Moon/Sun, compute live ephemeris via backend (don't use stale history/cache)
     if (!isPlanetQuery(query)) {
       // 1. Check recent history (instant, offline)
       const knownHistory = sky?.history.find(h => h.name.toLowerCase() === query.toLowerCase());
       if (knownHistory) {
-        setSearchText('');
+        setSearchText(knownHistory.name);
         setSearchMsg(`Pointing at ${knownHistory.name}`);
         applySky({ ra: knownHistory.ra, dec: knownHistory.dec, target: knownHistory.name });
         return;
@@ -946,8 +982,8 @@ function App() {
         (t.alt && t.alt.toLowerCase() === query.toLowerCase())
       );
       if (knownTarget) {
-        setSearchText('');
         const displayName = knownTarget.alt ? `${knownTarget.name} (${knownTarget.alt})` : knownTarget.name;
+        setSearchText(displayName);
         setSearchMsg(`Pointing at ${displayName}`);
         applySky({ ra: knownTarget.ra, dec: knownTarget.dec, target: displayName });
         return;
@@ -955,27 +991,46 @@ function App() {
     }
     // 3. Fallback to backend live ephemeris / SIMBAD query
     setSearching(true);
-    setSearchMsg('');
+    setSearchMsg(`Pointing at ${query}...`);
+    setSky(prev => prev ? { ...prev, status: { ...prev.status, state: 'loading', message: `Resolving ${query}...` } } : prev);
     fetch(`${API_BASE}/mock/sky/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query })
     }).then(r => r.json()).then(d => {
       if (d.sky) setSky(d.sky);
-      if (d.success) { setSearchText(''); setSearchMsg(`Pointing at ${d.name}`); }
-      else setSearchMsg(d.error || 'Search failed');
+      if (d.success) {
+        setSearchText(d.name || query);
+        setSearchMsg(`Pointing at ${d.name || query}`);
+      } else {
+        setSearchMsg(d.error || 'Search failed');
+      }
     }).catch(() => setSearchMsg('Search failed (backend unreachable)'))
       .finally(() => setSearching(false));
   };
 
   const applySky = (changes: Partial<SkyConfig>) => {
     // Only the edited fields are sent; values are persisted server-side in config.json
-    setSky(prev => prev ? { ...prev, ...changes, status: { ...prev.status, state: 'loading', message: 'Loading...' } } : prev);
+    setSky(prev => prev ? { ...prev, ...changes, status: { ...prev.status, state: 'loading', message: 'Loading star catalog...' } } : prev);
     fetch(`${API_BASE}/mock/sky`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(changes)
-    }).then(r => r.json()).then(d => setSky(d)).catch(e => console.error("Error setting sky:", e));
+    }).then(r => r.json()).then(d => {
+      if (d && d.success) setSky(d);
+    }).catch(e => console.error("Error setting sky:", e));
+  };
+
+  const handleGo = () => {
+    setSearchIsOpen(false);
+    const query = searchText.trim();
+    if (query && (!sky || query.toLowerCase() !== (sky.target || '').toLowerCase())) {
+      searchSky(query);
+    } else if (hasUnsavedInputs) {
+      applySky(unsavedChanges);
+    } else if (query) {
+      searchSky(query);
+    }
   };
 
   const showToast = (msg: string, durationMs: number = 2500) => {
@@ -1615,14 +1670,11 @@ function App() {
                           style={{ flex: 1, minWidth: 0, fontSize: '11px' }}
                         />
                         <button
-                          onClick={() => {
-                            setSearchIsOpen(false);
-                            searchSky();
-                          }}
-                          disabled={searching || !searchText.trim()}
-                          style={{ fontSize: '11px' }}
+                          onClick={handleGo}
+                          disabled={searching || (!searchText.trim() && !hasUnsavedInputs)}
+                          style={{ fontSize: '11px', minWidth: '40px' }}
                         >
-                          {searching ? '...' : 'Go'}
+                          {searching ? '...' : (hasUnsavedInputs && !searchText.trim() ? 'Apply' : 'Go')}
                         </button>
                       </div>
 
@@ -1675,11 +1727,11 @@ function App() {
                                         <div
                                           key={`h-${h.name}`}
                                           onClick={() => {
+                                            setSearchIsOpen(false);
+                                            setSearchText(h.name);
                                             if (isPlanetQuery(h.name)) {
                                               searchSky(h.name);
                                             } else {
-                                              setSearchIsOpen(false);
-                                              setSearchText('');
                                               setSearchMsg(`Pointing at ${h.name}`);
                                               applySky({ ra: h.ra, dec: h.dec, target: h.name });
                                             }
@@ -1719,11 +1771,11 @@ function App() {
                                           <div
                                             key={`t-${t.name}`}
                                             onClick={() => {
+                                              setSearchIsOpen(false);
+                                              setSearchText(label);
                                               if (isPlanet) {
                                                 searchSky(t.name);
                                               } else {
-                                                setSearchIsOpen(false);
-                                                setSearchText('');
                                                 setSearchMsg(`Pointing at ${label}`);
                                                 applySky({ ra: t.ra, dec: t.dec, target: label });
                                               }
@@ -1779,24 +1831,72 @@ function App() {
                         ['dec', 'Dec (°)'],
                         ['focal_length_mm', 'Focal (mm)'],
                         ['pixel_size_um', 'Pixel (µm)'],
-                      ] as [keyof SkyConfig, string][]).map(([key, label]) => (
-                        <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                          {label}
-                          <input
-                            type="number"
-                            step="any"
-                            key={`${key}-${sky[key]}`}
-                            defaultValue={sky[key] as number}
-                            onBlur={e => {
-                              const v = parseFloat(e.target.value);
-                              if (!isNaN(v) && v !== sky[key]) applySky({ [key]: v } as Partial<SkyConfig>);
-                            }}
-                            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                            style={{ width: '100%', fontFamily: 'monospace', fontSize: '11px' }}
-                          />
-                        </label>
-                      ))}
+                      ] as [keyof SkyConfig, string][]).map(([key, label]) => {
+                        const isDirty = skyInputs[key] !== undefined && skyInputs[key] !== '' && parseFloat(skyInputs[key]) !== (sky ? (sky as any)[key] : undefined);
+                        return (
+                          <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <span style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px' }}>
+                              <span>{label}</span>
+                              {isDirty && <span style={{ color: 'var(--accent, #58a6ff)', fontSize: '9px', fontWeight: 600 }}>unsaved</span>}
+                            </span>
+                            <input
+                              type="number"
+                              step="any"
+                              value={skyInputs[key] ?? ''}
+                              onFocus={() => setEditingKey(key)}
+                              onChange={e => setSkyInputs(prev => ({ ...prev, [key]: e.target.value }))}
+                              onBlur={() => {
+                                setEditingKey(null);
+                                const v = parseFloat(skyInputs[key] || '');
+                                if (!isNaN(v) && v !== (sky ? (sky as any)[key] : undefined)) {
+                                  applySky({ [key]: v } as Partial<SkyConfig>);
+                                }
+                              }}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') {
+                                  (e.target as HTMLInputElement).blur();
+                                }
+                              }}
+                              style={{
+                                width: '100%',
+                                fontFamily: 'monospace',
+                                fontSize: '11px',
+                                borderColor: isDirty ? 'var(--accent, #58a6ff)' : undefined
+                              }}
+                            />
+                          </label>
+                        );
+                      })}
                     </div>
+                    {hasUnsavedInputs && (
+                      <div style={{ marginTop: '6px', display: 'flex', justifyContent: 'flex-end', gap: '6px' }}>
+                        <button
+                          onClick={() => {
+                            if (sky) {
+                              const reset: Record<string, string> = {};
+                              (['latitude', 'longitude', 'ra', 'dec', 'focal_length_mm', 'pixel_size_um'] as const).forEach(k => {
+                                reset[k] = sky[k] !== undefined && sky[k] !== null ? String(sky[k]) : '';
+                              });
+                              setSkyInputs(reset);
+                              setEditingKey(null);
+                            }
+                          }}
+                          style={{ fontSize: '10px', padding: '2px 8px' }}
+                        >
+                          Discard
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingKey(null);
+                            applySky(unsavedChanges);
+                          }}
+                          className="btn-primary"
+                          style={{ fontSize: '10px', padding: '2px 8px' }}
+                        >
+                          Apply Changes
+                        </button>
+                      </div>
+                    )}
                     <div style={{ marginTop: '8px' }}>
                       {sky.arcsec_per_pixel.toFixed(2)}″/px · FOV {sky.fov_deg[0].toFixed(2)}° × {sky.fov_deg[1].toFixed(2)}° · drift {sky.drift_px_per_sec.toFixed(1)} px/s
                     </div>

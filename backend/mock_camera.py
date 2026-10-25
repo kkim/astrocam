@@ -328,6 +328,7 @@ class MockCamera:
         self._sky_generation += 1
         gen = self._sky_generation
         self.sky_status = {"state": "loading", "stars": 0, "message": f"Loading {self.sky['backend']} catalog..."}
+        self.nav.status = dict(self.sky_status)
         threading.Thread(target=self._reload_sky, args=(gen, dict(self.sky)), daemon=True).start()
 
     def _reload_sky(self, gen: int, sky: Dict[str, Any]):

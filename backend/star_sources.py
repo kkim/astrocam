@@ -333,7 +333,22 @@ def resolve_name(query: str, lat_deg: float = 37.77, lon_deg: float = -122.42) -
     if key in ("ncp", "north pole", "true north pole", "north celestial pole"):
         return ("North Celestial Pole", 0.0, 90.0)
 
-    # 2. Astronomical coordinates via Sesame/SIMBAD
+    # 2. Check local offline catalog of ~250 Messier & named stars
+    targets_file = os.path.join(os.path.dirname(__file__), "targets.json")
+    if os.path.exists(targets_file):
+        try:
+            with open(targets_file, "r") as f:
+                targets = json.load(f)
+            for t in targets:
+                t_name = t.get("name", "").strip().lower()
+                t_alt = (t.get("alt") or "").strip().lower()
+                if key == t_name or (t_alt and key == t_alt):
+                    display_name = f"{t['name']} ({t['alt']})" if t.get("alt") else t["name"]
+                    return display_name, float(t["ra"]), float(t["dec"])
+        except Exception:
+            pass
+
+    # 3. Astronomical coordinates via Sesame/SIMBAD
     from astropy.coordinates import SkyCoord
     from astropy.utils.data import conf
     try:

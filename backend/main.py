@@ -296,6 +296,14 @@ pipeline = AstroPipeline(rig)
 panorama = PanoramaManager(rig)
 restore_camera_settings()
 
+def _on_nav_change_reset_acc(changed_keys):
+    if changed_keys & {"ra", "dec", "target"}:
+        if pipeline:
+            pipeline.reset_accumulation()
+
+from sky_nav import get_sky_nav
+get_sky_nav().subscribe(_on_nav_change_reset_acc)
+
 @app.on_event("shutdown")
 def shutdown_event():
     event_logger.log("System shutting down...")
@@ -420,7 +428,7 @@ def get_mock_sky():
 def set_mock_sky(update: SkyUpdate):
     from sky_nav import get_sky_nav
     nav = get_sky_nav()
-    success = nav.set(**update.model_dump())
+    success = nav.set(**update.model_dump(exclude_unset=True))
     return {"success": success, **nav.get_config()}
 
 class SkySearch(BaseModel):
