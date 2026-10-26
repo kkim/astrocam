@@ -13,7 +13,7 @@ from panorama import PanoramaManager
 from pipeline import AstroPipeline
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import glob
 import json
 import subprocess
@@ -150,10 +150,12 @@ def list_captures():
         sm_exists = os.path.exists(thumb_sm_path)
         preview_url = f"/captures/thumbnails/{s_name}.jpg" if preview_exists else f"/captures/{s_name}/{first_frame}"
         thumb_url = f"/captures/thumbnails/{s_name}_sm.jpg" if sm_exists else preview_url
+        is_fav = bool(nav_info.get("favorite", False))
         items.append({
             "id": s_name,
             "type": "sequence",
             "name": s_name,
+            "favorite": is_fav,
             "target": nav_info.get("target") or s_meta["target_name"],
             "stars": nav_info.get("stars", ""),
             "ra": nav_info.get("ra"),
@@ -194,6 +196,7 @@ def list_captures():
 
         target_name = ""
         camera_settings = {}
+        c_nav = {}
         sidecar_path = filepath + ".nav.json"
         if os.path.exists(sidecar_path):
             try:
@@ -204,12 +207,15 @@ def list_captures():
             except Exception:
                 pass
 
+        is_fav = bool(c_nav.get("favorite", False))
         items.append({
             "id": filename,
             "type": "image",
             "name": filename,
+            "favorite": is_fav,
             "target": target_name,
             "camera_settings": camera_settings,
+            "nav": c_nav,
             "time": dt.strftime("%H:%M:%S"),
             "date": dt.strftime("%Y-%m-%d"),
             "datetime": dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -228,9 +234,13 @@ def list_captures():
             "mtime": mtime
         })
 
-    # Sort by capture datetime (latest shown first) and return latest 30 captures
+    # Sort by capture datetime (latest shown first); always preserve favorites plus latest 30
     items.sort(key=lambda x: (x.get("datetime", ""), x.get("mtime", 0)), reverse=True)
-    return items[:30]
+    fav_items = [x for x in items if x.get("favorite")]
+    non_fav_items = [x for x in items if not x.get("favorite")][:30]
+    all_returned = fav_items + [x for x in non_fav_items if x not in fav_items]
+    all_returned.sort(key=lambda x: (x.get("datetime", ""), x.get("mtime", 0)), reverse=True)
+    return all_returned
 
 
 class MosaicGenerateRequest(BaseModel):
@@ -262,16 +272,286 @@ class StackNoteUpdate(BaseModel):
     stars: Optional[str] = None
     ra: Optional[float] = None
     dec: Optional[float] = None
+    backend: Optional[str] = None
+    max_mag: Optional[float] = None
+    camera_rotation_deg: Optional[float] = None
+    camera_flip_x: Optional[bool] = None
+    hist_min: Optional[int] = None
+    hist_max: Optional[int] = None
+    anchor_x: Optional[float] = None
+    anchor_y: Optional[float] = None
+    show_crosshairs: Optional[bool] = None
+    favorite: Optional[bool] = None
+    focal_length_mm: Optional[float] = None
+    pixel_size_um: Optional[float] = None
     orientation: Optional[str] = None
     note: Optional[str] = None
 
 
+_TARGETS_CACHE: Optional[List[Dict[str, Any]]] = None
+
+
+def _get_targets_catalog() -> List[Dict[str, Any]]:
+    global _TARGETS_CACHE
+    if _TARGETS_CACHE is not None:
+        return _TARGETS_CACHE
+    targets_file = os.path.join(os.path.dirname(__file__), "targets.json")
+    if os.path.exists(targets_file):
+        try:
+            with open(targets_file, "r") as f:
+                _TARGETS_CACHE = json.load(f)
+                return _TARGETS_CACHE
+        except Exception:
+            pass
+    return []
+
+
+def _enrich_star_name(raw_name: str, ra_deg: float, dec_deg: float, fallback_target: Optional[str] = None) -> str:
+    """Enrich generic HIP/Gaia identifiers using targets.json when coordinates match within ~14 arcsec."""
+    targets = _get_targets_catalog()
+    cos_d = max(1e-4, float(np.cos(np.deg2rad(dec_deg))))
+    best_name = None
+    best_dist = 0.004  # degrees (~14.4 arcsec)
+    for t in targets:
+        if t.get("type") != "star":
+            continue
+        tra = t.get("ra")
+        tdec = t.get("dec")
+        if tra is None or tdec is None:
+            continue
+        dra = ((ra_deg - float(tra) + 180.0) % 360.0 - 180.0) * cos_d
+        ddec = dec_deg - float(tdec)
+        dist = float(np.hypot(dra, ddec))
+        if dist < best_dist:
+            best_dist = dist
+            best_name = t["name"]
+    if best_name:
+        if raw_name.startswith("HIP ") and best_name not in raw_name:
+            return f"{best_name} ({raw_name})"
+        return best_name
+    if fallback_target and raw_name.startswith("HIP "):
+        return f"{fallback_target} ({raw_name})"
+    return raw_name
+
+
+class MosaicSkyRequest(BaseModel):
+    query: Optional[str] = None
+    backend: Optional[str] = None
+    ra: Optional[float] = None
+    dec: Optional[float] = None
+    focal_length_mm: Optional[float] = None
+    pixel_size_um: Optional[float] = None
+    max_mag: Optional[float] = None
+    top_n: int = 50
+
+
+@app.post("/mosaic/sky/{session_id}")
+def query_mosaic_sky(session_id: str, req: Optional[MosaicSkyRequest] = None):
+    from sky_nav import get_sky_nav
+    from star_sources import (
+        get_star_source,
+        available_backends,
+        get_visible_planets,
+        resolve_name,
+        altaz,
+    )
+
+    s_dir = os.path.join(CAPTURES_DIR, session_id)
+    nav_data: Dict[str, Any] = {}
+    nav_path = os.path.join(s_dir, "nav.json")
+    if os.path.exists(nav_path):
+        try:
+            with open(nav_path, "r") as f:
+                nav_data = json.load(f)
+        except Exception:
+            nav_data = {}
+
+    global_sky = get_sky_nav().get_config()
+    backend_name = (
+        (req.backend if req and req.backend else None)
+        or nav_data.get("backend")
+        or global_sky.get("backend")
+        or "skyfield"
+    )
+    if backend_name not in available_backends():
+        backend_name = "skyfield"
+
+    lat_deg = float(nav_data.get("latitude", global_sky.get("latitude", 37.77)))
+    lon_deg = float(nav_data.get("longitude", global_sky.get("longitude", -122.42)))
+    focal_mm = float(
+        (req.focal_length_mm if req and req.focal_length_mm else None)
+        or nav_data.get("focal_length_mm")
+        or global_sky.get("focal_length_mm", 500.0)
+    )
+    pixel_um = float(
+        (req.pixel_size_um if req and req.pixel_size_um else None)
+        or nav_data.get("pixel_size_um")
+        or global_sky.get("pixel_size_um", 1.4)
+    )
+
+    target_name = nav_data.get("target") or nav_data.get("stars") or global_sky.get("target") or ""
+    ra_val = req.ra if (req and req.ra is not None) else nav_data.get("ra", global_sky.get("ra", 89.88218))
+    dec_val = req.dec if (req and req.dec is not None) else nav_data.get("dec", global_sky.get("dec", 44.94743))
+    ra_deg = float(ra_val)
+    dec_deg = float(dec_val)
+
+    # Resolve target name if query provided
+    if req and req.query and req.query.strip():
+        q_str = req.query.strip()
+        q_low = q_str.lower()
+        matched_local = None
+        for t in _get_targets_catalog():
+            t_name = t.get("name", "")
+            t_alt = t.get("alt", "")
+            alt_tokens = [tok.strip().lower() for tok in t_alt.split(",") if tok.strip()]
+            t_label = f"{t_name} ({t_alt})" if t_alt else t_name
+            if q_low in (t_name.lower(), t_alt.lower(), t_label.lower()) or q_low in alt_tokens:
+                matched_local = (t_name, float(t["ra"]), float(t["dec"]))
+                break
+        if matched_local is not None:
+            target_name, ra_deg, dec_deg = matched_local
+        else:
+            try:
+                resolved_name, r_ra, r_dec = resolve_name(q_str, lat_deg=lat_deg, lon_deg=lon_deg)
+                target_name = resolved_name
+                ra_deg = float(r_ra)
+                dec_deg = float(r_dec)
+            except Exception as e:
+                return {"success": False, "error": f"Could not resolve '{q_str}': {e}"}
+
+    scale_rad = (pixel_um * 1e-3) / max(1.0, focal_mm)
+    arcsec_per_px = float(np.rad2deg(scale_rad) * 3600.0)
+    # Match MockCamera virtual canvas radius so cached AstropySource Gaia DR3 queries are reused
+    half_diag_px = 0.5 * float(np.hypot(3840, 1620))
+    radius_deg = float(np.rad2deg(half_diag_px * scale_rad)) * 1.02
+
+    try:
+        stars_raw = get_star_source(backend_name).query(ra_deg, dec_deg, radius_deg)
+        planets_raw = get_visible_planets(ra_deg, dec_deg, radius_deg, lat_deg=lat_deg, lon_deg=lon_deg)
+        all_objs = list(planets_raw) + list(stars_raw)
+    except Exception as e:
+        return {"success": False, "error": f"Catalog query failed ({backend_name}): {e}"}
+
+    # Deduplicate unresolved tight multiple star components (< 15 arcsec) and sort brightest first
+    all_objs.sort(key=lambda s: float(s[2]))
+    deduped = []
+    for obj in all_objs:
+        s_ra, s_dec, s_mag, s_name = float(obj[0]), float(obj[1]), float(obj[2]), str(obj[3])
+        cos_d = max(1e-4, float(np.cos(np.deg2rad(s_dec))))
+        is_dup = False
+        for prev in deduped:
+            dra = ((s_ra - prev[0] + 180.0) % 360.0 - 180.0) * cos_d
+            ddec = s_dec - prev[1]
+            if np.hypot(dra, ddec) * 3600.0 < 15.0:
+                is_dup = True
+                break
+        if not is_dup:
+            deduped.append((s_ra, s_dec, s_mag, s_name))
+
+    # If the queried target (ra_deg, dec_deg) matches a star in deduped within 30 arcsec,
+    # promote that star to Rank #1 so the searched star is the (0, 0) crosshair anchor
+    if len(deduped) > 1:
+        cos_d0 = max(1e-4, float(np.cos(np.deg2rad(dec_deg))))
+        for idx_s, s_item in enumerate(deduped):
+            dra = ((s_item[0] - ra_deg + 180.0) % 360.0 - 180.0) * cos_d0
+            ddec = s_item[1] - dec_deg
+            if np.hypot(dra, ddec) * 3600.0 < 30.0:
+                if idx_s > 0:
+                    deduped.insert(0, deduped.pop(idx_s))
+                break
+
+    # Anchor tangent-plane offsets at Star #1 (the searched/brightest star in the scene)
+    if deduped:
+        r0 = float(np.deg2rad(deduped[0][0]))
+        d0 = float(np.deg2rad(deduped[0][1]))
+    else:
+        r0 = float(np.deg2rad(ra_deg))
+        d0 = float(np.deg2rad(dec_deg))
+
+    top_n = max(1, min(80, int(req.top_n if req else 50)))
+    max_scene_dist_px = 1450.0
+    top_stars = []
+    in_scene_count = 0
+    for idx, (s_ra, s_dec, s_mag, s_name) in enumerate(deduped):
+        r = float(np.deg2rad(s_ra))
+        d = float(np.deg2rad(s_dec))
+        cosc = float(np.sin(d0) * np.sin(d) + np.cos(d0) * np.cos(d) * np.cos(r - r0))
+        if cosc <= 0:
+            continue
+        xi = float(np.cos(d) * np.sin(r - r0) / cosc)
+        eta = float((np.cos(d0) * np.sin(d) - np.sin(d0) * np.cos(d) * np.cos(r - r0)) / cosc)
+        # Standard North-Up (-y), East-Right (+x) tangent-plane pixel coordinates matching MockCamera
+        dx_px = float(xi / scale_rad) if idx > 0 else 0.0
+        dy_px = float(-eta / scale_rad) if idx > 0 else 0.0
+        dist_px = float(np.hypot(dx_px, dy_px))
+        if idx > 0 and dist_px > max_scene_dist_px:
+            continue
+        in_scene_count += 1
+        if len(top_stars) >= top_n:
+            continue
+        pa_deg = float(np.rad2deg(np.arctan2(xi, eta)) % 360.0) if dist_px > 0.1 else 0.0
+
+        enriched = _enrich_star_name(
+            s_name,
+            s_ra,
+            s_dec,
+            fallback_target=(target_name if len(top_stars) == 0 else None),
+        )
+        short_label = enriched.split(" (")[0] if " (" in enriched else enriched
+
+        top_stars.append({
+            "rank": len(top_stars) + 1,
+            "name": enriched,
+            "raw_name": s_name,
+            "short_name": short_label,
+            "mag": round(s_mag, 2),
+            "ra": round(s_ra, 6),
+            "dec": round(s_dec, 6),
+            "dx_px": round(dx_px, 2),
+            "dy_px": round(dy_px, 2),
+            "dist_px": round(dist_px, 1),
+            "pa_deg": round(pa_deg, 1),
+        })
+
+    when_dt = None
+    if nav_data.get("utc"):
+        try:
+            when_dt = datetime.fromisoformat(str(nav_data["utc"]))
+        except Exception:
+            when_dt = None
+
+    alt_val, az_val = altaz(ra_deg, dec_deg, lat_deg, lon_deg, when=when_dt)
+    alt = round(alt_val, 2)
+    az = round(az_val, 2)
+
+    return {
+        "success": True,
+        "target": target_name or (top_stars[0]["short_name"] if top_stars else ""),
+        "ra": round(ra_deg, 5),
+        "dec": round(dec_deg, 5),
+        "altitude": alt,
+        "azimuth": az,
+        "backend": backend_name,
+        "backends": available_backends(),
+        "focal_length_mm": focal_mm,
+        "pixel_size_um": pixel_um,
+        "arcsec_per_pixel": round(arcsec_per_px, 3),
+        "total_catalog_stars": in_scene_count,
+        "top_stars": top_stars,
+    }
+
+
 @app.post("/mosaic/note/{session_id}")
 def update_stack_note(session_id: str, req: StackNoteUpdate):
+    from star_sources import altaz
+
     s_dir = os.path.join(CAPTURES_DIR, session_id)
-    if not os.path.isdir(s_dir):
-        return {"success": False, "error": f"Session {session_id} not found"}
-    nav_path = os.path.join(s_dir, "nav.json")
+    if os.path.isdir(s_dir):
+        nav_path = os.path.join(s_dir, "nav.json")
+    elif os.path.isfile(s_dir):
+        nav_path = s_dir + ".nav.json"
+    else:
+        return {"success": False, "error": f"Session or file {session_id} not found"}
     nav_data = {}
     if os.path.exists(nav_path):
         try:
@@ -282,6 +562,19 @@ def update_stack_note(session_id: str, req: StackNoteUpdate):
     updates = req.model_dump(exclude_unset=True)
     for k, v in updates.items():
         nav_data[k] = v
+
+    # Recompute session altitude/azimuth if RA/Dec are present
+    if "ra" in nav_data and "dec" in nav_data and nav_data["ra"] is not None and nav_data["dec"] is not None:
+        try:
+            when_dt = datetime.fromisoformat(str(nav_data["utc"])) if nav_data.get("utc") else None
+            lat_d = float(nav_data.get("latitude", 37.77))
+            lon_d = float(nav_data.get("longitude", -122.42))
+            alt_v, az_v = altaz(float(nav_data["ra"]), float(nav_data["dec"]), lat_d, lon_d, when=when_dt)
+            nav_data["altitude"] = alt_v
+            nav_data["azimuth"] = az_v
+        except Exception:
+            pass
+
     try:
         tmp_path = nav_path + ".tmp"
         with open(tmp_path, "w") as f:

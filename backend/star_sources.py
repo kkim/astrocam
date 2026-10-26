@@ -36,6 +36,15 @@ HIP_NAMES = {
     86614: "Eltanin", 95947: "Albireo", 100453: "Sadr", 107315: "Enif",
 }
 
+_HIP_NAMES_PATH = os.path.join(DATA_DIR, "hip_names.json")
+if os.path.exists(_HIP_NAMES_PATH):
+    try:
+        with open(_HIP_NAMES_PATH, "r") as _f:
+            for _k, _v in json.load(_f).items():
+                HIP_NAMES[int(_k)] = str(_v)
+    except Exception:
+        pass
+
 
 def _lst_deg(lon_deg: float, when: Optional[datetime] = None) -> float:
     """Local mean sidereal time in degrees (longitude east-positive)."""
@@ -342,7 +351,9 @@ def resolve_name(query: str, lat_deg: float = 37.77, lon_deg: float = -122.42) -
             for t in targets:
                 t_name = t.get("name", "").strip().lower()
                 t_alt = (t.get("alt") or "").strip().lower()
-                if key == t_name or (t_alt and key == t_alt):
+                alt_tokens = [tok.strip() for tok in t_alt.split(",") if tok.strip()]
+                t_label = f"{t['name']} ({t['alt']})".lower() if t.get("alt") else t_name
+                if key in (t_name, t_alt, t_label) or key in alt_tokens:
                     display_name = f"{t['name']} ({t['alt']})" if t.get("alt") else t["name"]
                     return display_name, float(t["ra"]), float(t["dec"])
         except Exception:

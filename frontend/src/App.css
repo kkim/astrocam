@@ -345,7 +345,7 @@ body, html, #root {
 .capture-badge {
   position: absolute;
   top: 6px;
-  right: 6px;
+  right: 34px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -358,6 +358,70 @@ body, html, #root {
   border-radius: 5px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
   z-index: 2;
+}
+
+.capture-fav-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(13, 17, 23, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 5;
+  padding: 0;
+  color: #fff;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.capture-fav-btn:hover {
+  transform: scale(1.15);
+  background: rgba(13, 17, 23, 0.95);
+  border-color: #fbbf24;
+}
+
+.capture-fav-btn.active {
+  background: rgba(45, 30, 5, 0.9);
+  border-color: rgba(251, 191, 36, 0.7);
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.35);
+}
+
+.gallery-filter-tabs {
+  display: inline-flex;
+  gap: 4px;
+  background: rgba(22, 27, 34, 0.8);
+  padding: 2px 4px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin-left: 8px;
+}
+
+.gallery-filter-tab {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.gallery-filter-tab:hover {
+  color: #e6edf3;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.gallery-filter-tab.active {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.15);
+  font-weight: 600;
 }
 
 .mosaic-badge {
@@ -1213,6 +1277,44 @@ input[type="number"] {
   cursor: not-allowed;
 }
 
+.mosaic-viewer-btn.fav {
+  border-color: rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+}
+
+.mosaic-viewer-btn.fav:hover,
+.mosaic-viewer-btn.fav.active {
+  background: rgba(251, 191, 36, 0.18);
+  border-color: #fbbf24;
+  color: #fde047;
+}
+
+.mosaic-hist-save-btn {
+  background: rgba(88, 166, 255, 0.15);
+  border: 1px solid rgba(88, 166, 255, 0.4);
+  color: #79c0ff;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.15s ease;
+}
+
+.mosaic-hist-save-btn:hover {
+  background: rgba(88, 166, 255, 0.3);
+  border-color: #58a6ff;
+  color: #ffffff;
+}
+
+.mosaic-hist-save-btn.saved {
+  background: rgba(46, 160, 67, 0.25);
+  border-color: #3fb950;
+  color: #7ee787;
+}
+
 .mosaic-diag-pill {
   font-size: 11px;
   font-weight: 500;
@@ -1444,4 +1546,201 @@ input[type="number"] {
   color: #e6edf3;
   font-family: monospace;
   font-weight: 500;
+}
+
+.mosaic-overlay-canvas {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.mosaic-nav-search-box input {
+  background: #090d13;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #e6edf3;
+  padding: 4px 6px;
+}
+
+.mosaic-nav-search-box input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.mosaic-autocomplete-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 2px;
+  max-height: 170px;
+  overflow-y: auto;
+  background: #0d1117;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  z-index: 999;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.65);
+}
+
+.mosaic-autocomplete-item {
+  padding: 4px 8px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.mosaic-autocomplete-item:hover {
+  background: rgba(88, 166, 255, 0.16);
+}
+
+.mosaic-mini-btn-group {
+  display: flex;
+  gap: 4px;
+}
+
+.mosaic-mini-chip {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #8b949e;
+  border-radius: 4px;
+  padding: 3px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mosaic-mini-chip:hover {
+  border-color: rgba(88, 166, 255, 0.4);
+  color: #e6edf3;
+}
+
+.mosaic-mini-chip.active {
+  background: rgba(88, 166, 255, 0.18);
+  border-color: rgba(88, 166, 255, 0.55);
+  color: #58a6ff;
+}
+
+.mosaic-top-stars-box {
+  background: rgba(9, 13, 19, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mosaic-top-stars-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: #8b949e;
+}
+
+.mosaic-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #58a6ff;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mosaic-link-btn:hover {
+  text-decoration: underline;
+}
+
+.mosaic-top-stars-empty {
+  font-size: 10px;
+  color: #8b949e;
+  font-style: italic;
+}
+
+.mosaic-top-stars-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mosaic-top-star-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-family: monospace;
+}
+
+.mosaic-star-rank {
+  font-weight: 700;
+}
+
+.mosaic-star-name {
+  color: #e6edf3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mosaic-star-mag {
+  color: #8b949e;
+}
+
+.mosaic-star-dist {
+  color: #7ee787;
+  min-width: 38px;
+  text-align: right;
+}
+
+.mosaic-rotation-box {
+  background: rgba(9, 13, 19, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mosaic-rotation-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: #8b949e;
+}
+
+.mosaic-rot-num {
+  width: 58px;
+  background: #090d13;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #e6edf3;
+  font-family: monospace;
+  font-size: 11px;
+  padding: 2px 4px;
+  text-align: right;
+}
+
+.mosaic-rot-slider {
+  width: 100%;
+  accent-color: #58a6ff;
+  margin: 2px 0;
+}
+
+.mosaic-rot-presets {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
 }
