@@ -17,6 +17,16 @@ JOB_QUEUE: queue.Queue = queue.Queue()
 WORKER_THREAD: Optional[threading.Thread] = None
 LOCK = threading.Lock()
 
+def _load_json_safe(path: str) -> Optional[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
     """Checks the mosaic status and live progress of a session directory."""
     mosaic_dir = os.path.join(s_dir, MOSAIC_SUBDIR)
@@ -24,6 +34,11 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
     real_mosaic_marker = os.path.join(mosaic_dir, "mosaic_linear_16bit.tif")
     proc_marker = os.path.join(mosaic_dir, ".processing")
     progress_file = os.path.join(mosaic_dir, ".progress.json")
+    meta_file = os.path.join(mosaic_dir, "mosaic_meta.json")
+    nav_file = os.path.join(s_dir, "nav.json")
+
+    mosaic_meta = _load_json_safe(meta_file)
+    nav_data = _load_json_safe(nav_file)
 
     with LOCK:
         is_active = (session_id == ACTIVE_SESSION)
@@ -34,14 +49,16 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
                 break
 
     # A completed mosaic must have both the HDR render and the linear 16-bit output
-    if os.path.exists(mosaic_hdr_path) and os.path.exists(real_mosaic_marker):
+    if os.path.exists(mosaic_hdr_path) and os.path.exists(real_mosaic_marker) and not is_active and queue_pos == 0:
         return {
             "has_mosaic": True,
             "mosaic_status": "ready",
             "mosaic_url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png",
-            "mosaic_mtime": os.path.getmtime(mosaic_hdr_path),
+            "mosaic_mtime": os.path.getmtime(real_mosaic_marker),
             "mosaic_progress": {"percent": 100, "message": "Mosaic ready", "stage": "ready"},
             "mosaic_queue_pos": 0,
+            "mosaic_meta": mosaic_meta,
+            "nav": nav_data,
         }
 
     # If currently queued waiting for the active job to finish
@@ -58,6 +75,8 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
                 "stage": "queued"
             },
             "mosaic_queue_pos": queue_pos,
+            "mosaic_meta": mosaic_meta,
+            "nav": nav_data,
         }
 
     # Check if the process is orphaned (> 15 minutes old and not in active jobs)
@@ -90,6 +109,8 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
             "mosaic_mtime": mtime,
             "mosaic_progress": progress_data,
             "mosaic_queue_pos": 0,
+            "mosaic_meta": mosaic_meta,
+            "nav": nav_data,
         }
 
     # If only an old placeholder exists without completed mosaic outputs, clean it up
@@ -108,6 +129,8 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
         "mosaic_mtime": 0,
         "mosaic_progress": None,
         "mosaic_queue_pos": 0,
+        "mosaic_meta": mosaic_meta,
+        "nav": nav_data,
     }
 
 def create_placeholder_mosaic(s_dir: str, output_dir: str, first_frame: str) -> str:
@@ -164,12 +187,46 @@ def create_placeholder_mosaic(s_dir: str, output_dir: str, first_frame: str) -> 
     cv2.imwrite(out_path, img)
     return out_path
 
+def _build_mosaic_cli_args(options: Optional[Dict[str, Any]]) -> List[str]:
+    if not options:
+        return []
+    args: List[str] = []
+    if options.get("align_mode") in ("constellation", "single"):
+        args.extend(["--align-mode", str(options["align_mode"])])
+    if options.get("min_snr") is not None:
+        args.extend(["--min-snr", str(float(options["min_snr"]))])
+    if options.get("max_step_px") is not None and float(options["max_step_px"]) > 0:
+        args.extend(["--max-step-px", str(float(options["max_step_px"]))])
+    if options.get("static_filter") is False:
+        args.append("--no-static-filter")
+    if options.get("defect_radius") is not None:
+        args.extend(["--defect-radius", str(int(options["defect_radius"]))])
+    if options.get("defect_soft_px") is not None:
+        args.extend(["--defect-soft-px", str(int(options["defect_soft_px"]))])
+    if options.get("use_defect_mask") is False:
+        args.append("--no-defect-mask")
+    if options.get("feather_px") is not None:
+        args.extend(["--feather", str(int(options["feather_px"]))])
+    if options.get("stretch_method") in ("asinh", "mtf", "log", "linear"):
+        args.extend(["--stretch", str(options["stretch_method"])])
+    if options.get("stretch_factor") is not None:
+        args.extend(["--stretch-factor", str(float(options["stretch_factor"]))])
+    if options.get("fov_mode") in ("full", "first"):
+        args.extend(["--fov", str(options["fov_mode"])])
+    return args
+
+
 def _queue_worker_loop():
     """Background worker daemon thread that processes mosaic jobs one-by-one safely."""
     global ACTIVE_SESSION
     while True:
         try:
-            session_id, s_dir = JOB_QUEUE.get(timeout=2.0)
+            job_item = JOB_QUEUE.get(timeout=2.0)
+            if len(job_item) == 3:
+                session_id, s_dir, job_options = job_item
+            else:
+                session_id, s_dir = job_item
+                job_options = {}
         except queue.Empty:
             with LOCK:
                 ACTIVE_SESSION = None
@@ -188,7 +245,7 @@ def _queue_worker_loop():
         real_mosaic_marker = os.path.join(output_dir, "mosaic_linear_16bit.tif")
 
         try:
-            if os.path.exists(real_mosaic_marker):
+            if os.path.exists(real_mosaic_marker) and not (job_options or {}).get("force"):
                 event_logger.log(f"Mosaic: {session_id} already completed in {MOSAIC_SUBDIR}, skipping.")
                 continue
 
@@ -204,8 +261,9 @@ def _queue_worker_loop():
             venv_py = os.path.abspath(os.path.join(os.path.dirname(__file__), "venv/bin/python"))
             py_exec = venv_py if os.path.exists(venv_py) else sys.executable
 
-            event_logger.log(f"Mosaic: Started star alignment on {session_id} ({len(files)} frames)...")
-            cmd = [py_exec, script_path, s_dir, "-o", output_dir]
+            extra_args = _build_mosaic_cli_args(job_options)
+            event_logger.log(f"Mosaic: Started star alignment on {session_id} ({len(files)} frames) {' '.join(extra_args)}...")
+            cmd = [py_exec, script_path, s_dir, "-o", output_dir] + extra_args
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             if res.returncode == 0 and os.path.exists(real_mosaic_marker):
@@ -243,13 +301,15 @@ def _queue_worker_loop():
                 if ACTIVE_SESSION == session_id:
                     ACTIVE_SESSION = None
 
+
 def _ensure_worker_started_locked():
     global WORKER_THREAD
     if WORKER_THREAD is None or not WORKER_THREAD.is_alive():
         WORKER_THREAD = threading.Thread(target=_queue_worker_loop, daemon=True)
         WORKER_THREAD.start()
 
-def trigger_mosaic_stitching(session_id: str, s_dir: str) -> Dict[str, Any]:
+
+def trigger_mosaic_stitching(session_id: str, s_dir: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Submits a mosaic creation job to the single-worker background queue.
     Guarantees only one mosaic runs at a time to protect CPU and RAM.
@@ -258,24 +318,25 @@ def trigger_mosaic_stitching(session_id: str, s_dir: str) -> Dict[str, Any]:
     proc_marker = os.path.join(output_dir, ".processing")
     mosaic_hdr_path = os.path.join(output_dir, "mosaic_hdr_asinh_8bit.png")
     real_mosaic_marker = os.path.join(output_dir, "mosaic_linear_16bit.tif")
+    force = bool((options or {}).get("force"))
 
     with LOCK:
-        # If already genuinely finished
-        if os.path.exists(mosaic_hdr_path) and os.path.exists(real_mosaic_marker):
-            return {
-                "success": True,
-                "status": "ready",
-                "message": "Mosaic is ready",
-                "queue_pos": 0,
-                "url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png"
-            }
-
         # If currently actively running
         if session_id == ACTIVE_SESSION or os.path.exists(proc_marker):
             return {
                 "success": True,
                 "status": "processing",
                 "message": "Mosaic is currently processing",
+                "queue_pos": 0,
+                "url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png"
+            }
+
+        # If already genuinely finished and not forced to re-stitch
+        if not force and os.path.exists(mosaic_hdr_path) and os.path.exists(real_mosaic_marker):
+            return {
+                "success": True,
+                "status": "ready",
+                "message": "Mosaic is ready",
                 "queue_pos": 0,
                 "url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png"
             }
@@ -299,6 +360,13 @@ def trigger_mosaic_stitching(session_id: str, s_dir: str) -> Dict[str, Any]:
         if not files:
             return {"success": False, "error": "No capture frames found in session"}
 
+        # If force re-stitching, remove old marker so status transitions cleanly to processing/queued
+        if force and os.path.exists(real_mosaic_marker):
+            try:
+                os.remove(real_mosaic_marker)
+            except Exception:
+                pass
+
         # Create placeholder immediately so user can preview right away
         first_frame = files[0]
         create_placeholder_mosaic(s_dir, output_dir, first_frame)
@@ -306,13 +374,13 @@ def trigger_mosaic_stitching(session_id: str, s_dir: str) -> Dict[str, Any]:
         # Enqueue job into FIFO queue
         is_worker_idle = (ACTIVE_SESSION is None and not QUEUED_SESSIONS)
         QUEUED_SESSIONS.append((session_id, s_dir))
-        JOB_QUEUE.put((session_id, s_dir))
+        JOB_QUEUE.put((session_id, s_dir, options or {}))
         _ensure_worker_started_locked()
 
         if is_worker_idle:
             status_str = "processing"
             pos = 0
-            msg = "Mosaic generation started"
+            msg = "Mosaic re-stitching started" if force else "Mosaic generation started"
         else:
             status_str = "queued"
             pos = len(QUEUED_SESSIONS)

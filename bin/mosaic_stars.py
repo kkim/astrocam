@@ -89,8 +89,9 @@ def detect_corruption_stripes(
     scale = 257.0 if gray.dtype == np.uint16 else 1.0
 
     gray_f = gray.astype(np.float32)
-    bg_median = float(np.median(gray_f))
-    bg_std = float(np.std(gray_f))
+    sample = gray_f[::4, ::4] if gray_f.size > 65536 else gray_f
+    bg_median = float(np.median(sample))
+    bg_std = float(np.std(sample))
 
     # A stripe pixel must be well above the sky background
     thresh = max(bg_median + 3.5 * bg_std, bg_median * 1.8, 90.0 * scale)
@@ -130,6 +131,95 @@ def stripe_rects_to_mask(rects: List[Tuple[int, int, int, int]], h: int, w: int)
     return mask
 
 
+def detect_star_candidates(
+    img: np.ndarray,
+    max_peaks: int = 6,
+    min_snr: float = 3.0,
+    min_peak_above_bg: float = 5.0,
+    patch_radius: int = 15,
+    exclude_mask: Optional[np.ndarray] = None,
+) -> List[Dict[str, float]]:
+    """
+    Locates up to `max_peaks` candidate stars with sub-pixel centroid accuracy,
+    sorted in descending order of blurred peak intensity.
+    """
+    if len(img.shape) == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img
+
+    gray_f = gray.astype(np.float32)
+    use_sub = gray_f.size > 65536
+    if exclude_mask is not None and np.any(exclude_mask):
+        if use_sub:
+            valid_sub = ~exclude_mask[::4, ::4]
+            if not np.any(valid_sub):
+                return []
+            sub = gray_f[::4, ::4][valid_sub]
+        else:
+            valid = ~exclude_mask
+            if not np.any(valid):
+                return []
+            sub = gray_f[valid]
+        bg_val = float(np.median(sub))
+        std_val = float(np.std(sub))
+        gray_f = gray_f.copy()
+        gray_f[exclude_mask] = bg_val
+    else:
+        sub = gray_f[::4, ::4] if use_sub else gray_f
+        bg_val = float(np.median(sub))
+        std_val = float(np.std(sub))
+
+    if std_val < 1e-4:
+        return []
+
+    blurred = cv2.GaussianBlur(gray_f, (7, 7), 1.5)
+    h, w = gray.shape
+    supp_radius = max(patch_radius, 18)
+    candidates: List[Dict[str, float]] = []
+
+    for _ in range(max_peaks):
+        _, max_val, _, max_loc = cv2.minMaxLoc(blurred)
+        peak_delta = float(max_val) - bg_val
+        peak_snr = peak_delta / max(std_val, 1e-4)
+
+        if peak_snr < min_snr or peak_delta < min_peak_above_bg:
+            break
+
+        x0, y0 = max_loc
+        x_min = max(0, x0 - patch_radius)
+        x_max = min(w, x0 + patch_radius + 1)
+        y_min = max(0, y0 - patch_radius)
+        y_max = min(h, y0 + patch_radius + 1)
+
+        patch = np.maximum(gray_f[y_min:y_max, x_min:x_max] - bg_val, 0.0)
+        p_max = float(np.max(patch))
+        if p_max > 0:
+            patch_th = np.where(patch > 0.20 * p_max, patch, 0.0)
+            total_mass = float(np.sum(patch_th))
+            if total_mass > 0:
+                yy, xx = np.indices(patch.shape)
+                cx = float(np.sum(xx * patch_th) / total_mass + x_min)
+                cy = float(np.sum(yy * patch_th) / total_mass + y_min)
+            else:
+                cx, cy = float(x0), float(y0)
+        else:
+            cx, cy = float(x0), float(y0)
+
+        candidates.append({
+            "cx": cx,
+            "cy": cy,
+            "peak": float(max_val),
+            "bg": bg_val,
+            "snr": float(peak_snr),
+        })
+
+        if max_peaks > 1:
+            cv2.circle(blurred, (x0, y0), supp_radius, bg_val, -1)
+
+    return candidates
+
+
 def detect_star_centroid(
     img: np.ndarray,
     min_snr: float = 4.0,
@@ -138,76 +228,356 @@ def detect_star_centroid(
     exclude_mask: Optional[np.ndarray] = None,
 ) -> Optional[Tuple[float, float, float, float]]:
     """
-    Locates the bright star with sub-pixel centroid accuracy.
-    
-    Args:
-        img: Input image (BGR uint8/uint16 or grayscale float/int).
-        min_snr: Minimum peak-to-background SNR to qualify as a valid star.
-        min_peak_above_bg: Minimum intensity increment above background.
-        patch_radius: Radius around the peak pixel used for centroid calculation.
-        exclude_mask: Optional boolean (h, w) mask of pixels (e.g. corruption
-            stripes) that must never be considered part of a star.
-        
-    Returns:
-        (cx, cy, peak_val, bg_val) if star detected, else None.
+    Locates the brightest star with sub-pixel centroid accuracy.
     """
-    if len(img.shape) == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = img
-
-    gray_f = gray.astype(np.float64)
-    if exclude_mask is not None and np.any(exclude_mask):
-        valid = ~exclude_mask
-        if not np.any(valid):
-            return None
-        bg_val = float(np.median(gray_f[valid]))
-        std_val = float(np.std(gray_f[valid]))
-        # Flatten excluded regions to background so they can't win the peak search
-        gray_f = gray_f.copy()
-        gray_f[exclude_mask] = bg_val
-    else:
-        bg_val = float(np.median(gray_f))
-        std_val = float(np.std(gray_f))
-    
-    if std_val < 1e-4:
-        # Uniform/blank flat frame
+    cands = detect_star_candidates(
+        img,
+        max_peaks=1,
+        min_snr=min_snr,
+        min_peak_above_bg=min_peak_above_bg,
+        patch_radius=patch_radius,
+        exclude_mask=exclude_mask,
+    )
+    if not cands:
         return None
+    c = cands[0]
+    return c["cx"], c["cy"], c["peak"], c["bg"]
 
-    # Gaussian blur to filter out single-pixel sensor hot noise
-    blurred = cv2.GaussianBlur(gray_f, (7, 7), 1.5)
-    _, max_val, _, max_loc = cv2.minMaxLoc(blurred)
 
-    peak_delta = max_val - bg_val
-    peak_snr = peak_delta / max(std_val, 1e-4)
+def reject_static_peaks(
+    raw_frames: List[Dict[str, Any]],
+    static_radius_px: float = 2.0,
+    min_static_frames: int = 6,
+) -> List[Tuple[float, float, int]]:
+    """
+    Identifies and removes stationary sensor warm pixels/clusters that remain pinned
+    to fixed sensor coordinates across many frames while the true starfield moves.
 
-    if peak_snr < min_snr or peak_delta < min_peak_above_bg:
-        return None
+    Returns:
+        List of (x, y, frame_count) for each rejected static sensor defect cluster.
+    """
+    n_frames = len(raw_frames)
+    if n_frames < min_static_frames:
+        return []
 
-    x0, y0 = max_loc
-    h, w = gray.shape
-    x_min = max(0, x0 - patch_radius)
-    x_max = min(w, x0 + patch_radius + 1)
-    y_min = max(0, y0 - patch_radius)
-    y_max = min(h, y0 + patch_radius + 1)
+    all_pts = []
+    for rf in raw_frames:
+        for c in rf["cands"]:
+            all_pts.append((rf["idx"], c["cx"], c["cy"], c["snr"]))
+    if len(all_pts) < min_static_frames:
+        return []
 
-    # Sub-pixel center of mass on background-subtracted patch
-    patch = np.maximum(gray_f[y_min:y_max, x_min:x_max] - bg_val, 0.0)
-    p_max = np.max(patch)
-    if p_max <= 0:
-        return float(x0), float(y0), max_val, bg_val
+    pts_arr = np.array(all_pts, dtype=np.float64)
+    cell_counts: Dict[Tuple[int, int], List[int]] = {}
+    for i, (_, x, y, _) in enumerate(all_pts):
+        key = (int(round(x / 2.0)), int(round(y / 2.0)))
+        cell_counts.setdefault(key, []).append(i)
 
-    # Threshold patch at 20% of local peak to ignore distant background fluctuations
-    patch_th = np.where(patch > 0.20 * p_max, patch, 0.0)
-    total_mass = np.sum(patch_th)
-    if total_mass <= 0:
-        return float(x0), float(y0), max_val, bg_val
+    min_count = max(min_static_frames, int(0.03 * n_frames))
+    min_span = max(10, int(0.08 * n_frames))
 
-    yy, xx = np.indices(patch.shape)
-    cx = float(np.sum(xx * patch_th) / total_mass + x_min)
-    cy = float(np.sum(yy * patch_th) / total_mass + y_min)
+    candidate_statics: List[Tuple[float, float, int]] = []
+    used = np.zeros(len(pts_arr), dtype=bool)
+    for _, idxs in sorted(cell_counts.items(), key=lambda kv: -len(kv[1])):
+        if len(idxs) < min_count:
+            continue
+        cx0 = float(np.median(pts_arr[idxs, 1]))
+        cy0 = float(np.median(pts_arr[idxs, 2]))
+        near = np.where((np.hypot(pts_arr[:, 1] - cx0, pts_arr[:, 2] - cy0) <= static_radius_px) & (~used))[0]
+        if len(near) < min_count:
+            continue
+        f_span = float(np.max(pts_arr[near, 0]) - np.min(pts_arr[near, 0]))
+        if f_span >= min_span:
+            candidate_statics.append((float(np.median(pts_arr[near, 1])), float(np.median(pts_arr[near, 2])), int(len(near))))
+            used[near] = True
 
-    return cx, cy, float(max_val), bg_val
+    if not candidate_statics:
+        return []
+
+    # Verify the sequence actually has moving stars (so a zero-drift stationary star sequence is not wiped out)
+    non_static_pts = pts_arr[~used]
+    if len(non_static_pts) >= 3:
+        moving_span = float(np.hypot(
+            np.percentile(non_static_pts[:, 1], 95) - np.percentile(non_static_pts[:, 1], 5),
+            np.percentile(non_static_pts[:, 2], 95) - np.percentile(non_static_pts[:, 2], 5),
+        ))
+    else:
+        moving_span = 0.0
+
+    if moving_span < 5.0:
+        return []
+
+    for rf in raw_frames:
+        rf["cands"] = [
+            c for c in rf["cands"]
+            if not any(np.hypot(c["cx"] - sx, c["cy"] - sy) <= static_radius_px + 0.5 for sx, sy, _ in candidate_statics)
+        ]
+
+    return candidate_statics
+
+
+def align_constellation_candidates(
+    raw_frames: List[Dict[str, Any]],
+    align_mode: str = "constellation",
+    max_step_px: Optional[float] = None,
+    static_filter: bool = True,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Aligns multi-peak frame candidates using static-peak rejection, constellation
+    relative-vector matching, and trajectory velocity gating.
+    """
+    static_peaks: List[Tuple[float, float, int]] = []
+    if static_filter and align_mode == "constellation":
+        static_peaks = reject_static_peaks(raw_frames)
+
+    if align_mode == "single":
+        detections = []
+        for rf in raw_frames:
+            if not rf["cands"]:
+                continue
+            c0 = rf["cands"][0]
+            detections.append({
+                "idx": rf["idx"],
+                "path": rf["path"],
+                "filename": rf["filename"],
+                "cx": c0["cx"],
+                "cy": c0["cy"],
+                "peak": c0["peak"],
+                "bg": c0["bg"],
+                "stripes": rf["stripes"],
+            })
+        return detections, {
+            "align_mode": "single",
+            "constellation_stars": 1,
+            "constellation_offsets": [[0.0, 0.0]],
+            "pair_matches": 0,
+            "single_star_matches": len(detections),
+            "identity_swaps_prevented": 0,
+            "skipped_step_gate": 0,
+            "static_peaks_rejected": len(static_peaks),
+            "static_peak_coords": [[round(x, 1), round(y, 1), n] for x, y, n in static_peaks],
+            "pair_angle_deg": None,
+        }
+
+    # Discover recurring rigid star-pair vectors across the sequence
+    n_frames = len(raw_frames)
+    raw_vecs = []
+    for rf in raw_frames:
+        cs = rf["cands"]
+        for i in range(len(cs)):
+            for j in range(len(cs)):
+                if i == j:
+                    continue
+                dx = cs[j]["cx"] - cs[i]["cx"]
+                dy = cs[j]["cy"] - cs[i]["cy"]
+                if dy < 0 or (dy == 0 and dx <= 0):
+                    continue
+                dist = float(np.hypot(dx, dy))
+                if 12.0 <= dist <= 1200.0:
+                    raw_vecs.append((rf["idx"], i, j, dx, dy))
+
+    verified_vecs: List[Tuple[float, float, int]] = []
+    if len(raw_vecs) >= 4:
+        vec_arr = np.array(raw_vecs, dtype=np.float64)
+        v_bins: Dict[Tuple[int, int], List[int]] = {}
+        for idx_v, (_, _, _, dx, dy) in enumerate(raw_vecs):
+            b = (int(round(dx / 3.0)), int(round(dy / 3.0)))
+            v_bins.setdefault(b, []).append(idx_v)
+
+        min_vec_frames = max(4, int(0.03 * n_frames))
+        v_used = np.zeros(len(vec_arr), dtype=bool)
+        for _, idxs in sorted(v_bins.items(), key=lambda kv: -len(kv[1])):
+            if len(idxs) < min_vec_frames:
+                continue
+            dx0 = float(np.median(vec_arr[idxs, 3]))
+            dy0 = float(np.median(vec_arr[idxs, 4]))
+            near = np.where((np.hypot(vec_arr[:, 3] - dx0, vec_arr[:, 4] - dy0) <= 4.0) & (~v_used))[0]
+            if len(near) >= min_vec_frames:
+                verified_vecs.append((float(np.median(vec_arr[near, 3])), float(np.median(vec_arr[near, 4])), int(len(near))))
+                v_used[near] = True
+
+    # Build constellation offsets u_k relative to primary star S_0
+    u_offsets: List[np.ndarray] = [np.array([0.0, 0.0], dtype=np.float64)]
+    if verified_vecs:
+        best_ref = None
+        best_score = -1.0
+        search_limit = min(80, len(raw_frames))
+        for rf in raw_frames[:search_limit]:
+            cs = rf["cands"]
+            if not cs:
+                continue
+            for i, c0 in enumerate(cs):
+                offsets = [(0.0, 0.0)]
+                for j, cj in enumerate(cs):
+                    if i == j:
+                        continue
+                    dx = cj["cx"] - c0["cx"]
+                    dy = cj["cy"] - c0["cy"]
+                    if any(np.hypot(dx - ox, dy - oy) < 12.0 for ox, oy in offsets):
+                        continue
+                    for vx, vy, _ in verified_vecs:
+                        if np.hypot(dx - vx, dy - vy) <= 4.5 or np.hypot(dx + vx, dy + vy) <= 4.5:
+                            offsets.append((dx, dy))
+                            break
+                score = len(offsets) * 1000.0 + c0["snr"]
+                if len(offsets) >= 2 and score > best_score:
+                    best_score = score
+                    best_ref = offsets
+        if best_ref is not None:
+            u_offsets = [np.array(o, dtype=np.float64) for o in best_ref]
+
+    m_stars = len(u_offsets)
+    step_gate_base = float(max_step_px) if (max_step_px is not None and max_step_px > 0) else 25.0
+
+    detections: List[Dict[str, Any]] = []
+    pair_matches = 0
+    single_matches = 0
+    swaps_prevented = 0
+    skipped_gate = 0
+    prev_r: Optional[np.ndarray] = None
+    prev_idx: Optional[int] = None
+    vel = np.zeros(2, dtype=np.float64)
+
+    for rf in raw_frames:
+        cs = rf["cands"]
+        if not cs:
+            continue
+        fidx = rf["idx"]
+
+        best_multi = None
+        if m_stars >= 2:
+            for a, ca in enumerate(cs):
+                pa = np.array([ca["cx"], ca["cy"]], dtype=np.float64)
+                for k in range(m_stars):
+                    r_hyp = pa - u_offsets[k]
+                    matched = [(a, k, ca["snr"], r_hyp, ca["peak"], ca["bg"])]
+                    used_c = {a}
+                    used_s = {k}
+                    for j in range(m_stars):
+                        if j in used_s:
+                            continue
+                        expected_p = r_hyp + u_offsets[j]
+                        best_b = None
+                        best_d = 4.5
+                        for b, cb in enumerate(cs):
+                            if b in used_c:
+                                continue
+                            d = float(np.hypot(cb["cx"] - expected_p[0], cb["cy"] - expected_p[1]))
+                            if d <= best_d:
+                                best_d = d
+                                best_b = b
+                        if best_b is not None:
+                            cb = cs[best_b]
+                            pb = np.array([cb["cx"], cb["cy"]], dtype=np.float64)
+                            matched.append((best_b, j, cb["snr"], pb - u_offsets[j], cb["peak"], cb["bg"]))
+                            used_c.add(best_b)
+                            used_s.add(j)
+                    if len(matched) >= 2:
+                        w_sum = sum(m[2] for m in matched)
+                        r_refine = sum(m[2] * m[3] for m in matched) / w_sum
+                        prox_pen = 0.0
+                        if prev_r is not None and prev_idx is not None:
+                            dt = max(1, fidx - prev_idx)
+                            pred = prev_r + vel * min(dt, 5)
+                            step_d = float(np.hypot(r_refine[0] - pred[0], r_refine[1] - pred[1]))
+                            if max_step_px is not None and max_step_px > 0 and step_d > max_step_px * min(dt, 4):
+                                continue
+                            prox_pen = step_d * 0.1
+                        m_score = len(matched) * 10000.0 + w_sum - prox_pen
+                        if best_multi is None or m_score > best_multi[0]:
+                            best_multi = (m_score, r_refine, matched)
+
+        if best_multi is not None:
+            _, r_est, matched = best_multi
+            pair_matches += 1
+            if np.hypot(cs[0]["cx"] - r_est[0], cs[0]["cy"] - r_est[1]) > 8.0:
+                swaps_prevented += 1
+            if prev_r is not None and prev_idx is not None:
+                dt = max(1, fidx - prev_idx)
+                step_vec = (r_est - prev_r) / dt
+                if np.hypot(step_vec[0], step_vec[1]) <= 15.0:
+                    vel = 0.7 * vel + 0.3 * step_vec
+            prev_r = r_est
+            prev_idx = fidx
+            detections.append({
+                "idx": fidx,
+                "path": rf["path"],
+                "filename": rf["filename"],
+                "cx": float(r_est[0]),
+                "cy": float(r_est[1]),
+                "peak": float(max(m[4] for m in matched)),
+                "bg": float(matched[0][5]),
+                "stripes": rf["stripes"],
+            })
+        elif prev_r is not None and prev_idx is not None:
+            dt = max(1, fidx - prev_idx)
+            pred = prev_r + vel * min(dt, 5)
+            gate = step_gate_base * min(dt, 4)
+            best_single = None
+            for a, ca in enumerate(cs):
+                pa = np.array([ca["cx"], ca["cy"]], dtype=np.float64)
+                for k in range(m_stars):
+                    r_hyp = pa - u_offsets[k]
+                    d = float(np.hypot(r_hyp[0] - pred[0], r_hyp[1] - pred[1]))
+                    if d <= gate and (best_single is None or d < best_single[0]):
+                        best_single = (d, r_hyp, ca)
+            if best_single is not None:
+                _, r_est, ca_match = best_single
+                single_matches += 1
+                if np.hypot(cs[0]["cx"] - r_est[0], cs[0]["cy"] - r_est[1]) > 8.0:
+                    swaps_prevented += 1
+                step_vec = (r_est - prev_r) / dt
+                if np.hypot(step_vec[0], step_vec[1]) <= 15.0:
+                    vel = 0.7 * vel + 0.3 * step_vec
+                prev_r = r_est
+                prev_idx = fidx
+                detections.append({
+                    "idx": fidx,
+                    "path": rf["path"],
+                    "filename": rf["filename"],
+                    "cx": float(r_est[0]),
+                    "cy": float(r_est[1]),
+                    "peak": ca_match["peak"],
+                    "bg": ca_match["bg"],
+                    "stripes": rf["stripes"],
+                })
+            else:
+                skipped_gate += 1
+        elif m_stars == 1:
+            # Initialize single-star sequence from first available star candidate
+            c0 = cs[0]
+            r_est = np.array([c0["cx"], c0["cy"]], dtype=np.float64)
+            prev_r = r_est
+            prev_idx = fidx
+            single_matches += 1
+            detections.append({
+                "idx": fidx,
+                "path": rf["path"],
+                "filename": rf["filename"],
+                "cx": float(r_est[0]),
+                "cy": float(r_est[1]),
+                "peak": c0["peak"],
+                "bg": c0["bg"],
+                "stripes": rf["stripes"],
+            })
+
+    pair_angle_deg = None
+    if len(u_offsets) >= 2:
+        u1 = u_offsets[1]
+        pair_angle_deg = round(float(np.degrees(np.arctan2(u1[1], u1[0]))), 1)
+
+    return detections, {
+        "align_mode": align_mode,
+        "constellation_stars": m_stars,
+        "constellation_offsets": [[round(float(u[0]), 2), round(float(u[1]), 2)] for u in u_offsets],
+        "pair_matches": pair_matches,
+        "single_star_matches": single_matches,
+        "identity_swaps_prevented": swaps_prevented,
+        "skipped_step_gate": skipped_gate,
+        "static_peaks_rejected": len(static_peaks),
+        "static_peak_coords": [[round(x, 1), round(y, 1), n] for x, y, n in static_peaks],
+        "pair_angle_deg": pair_angle_deg,
+    }
 
 
 def create_feather_mask(h: int, w: int, feather_px: int = 15) -> np.ndarray:
@@ -361,32 +731,14 @@ def combine_images(
     verbose: bool = True,
     filter_stripes: bool = True,
     max_stripe_fraction: float = 0.5,
+    align_mode: str = "constellation",
+    min_snr: float = 3.0,
+    max_step_px: Optional[float] = None,
+    static_filter: bool = True,
 ) -> Dict[str, Any]:
     """
-    Main function to align and mosaic astrophotography images by their bright star.
-
-    Args:
-        input_dir: Path to directory containing image files (.tif, .tiff, .png, etc.).
-        output_dir: Directory to save outputs (defaults to <input_dir>/mosaic_v1).
-        fov_mode: 'full' (canvas expands to fit entire drift FOV) or 'first' (fixed to 1st frame).
-        feather_px: Pixels along image boundary for smooth seam feathering.
-        stretch_method: 'asinh', 'mtf', 'log', or 'linear'.
-        stretch_factor: Stretch strength parameter.
-        black_percentile: Lower percentile for background black-point calibration.
-        max_frames: Limit number of frames to process (useful for rapid testing).
-        defect_mask_path: Path to defect_mask.npy (defaults to captures/calibration/defect_mask.npy).
-        defect_radius: Dilation radius around bad pixels to zero-weight neighbor spill.
-        defect_soft_px: Soft linear ramp distance in pixels outside the dilated defect zone.
-        use_defect_mask: Whether to apply sensor defect masking.
-        save_individual_renders: Save linear 16-bit, HDR 16-bit, HDR 8-bit, and weight map.
-        verbose: Print progress to stdout.
-        filter_stripes: Detect MJPEG packet-loss stripes, exclude them from star
-            detection, and give them zero weight in the mosaic.
-        max_stripe_fraction: Drop a frame entirely if stripes cover more than this
-            fraction of its area.
-
-    Returns:
-        Dictionary with processing metadata, output paths, and resulting arrays.
+    Main function to align and mosaic astrophotography images by their bright star
+    or multi-star constellation.
     """
     input_dir = os.path.abspath(input_dir)
     if not os.path.isdir(input_dir):
@@ -416,6 +768,7 @@ def combine_images(
         print(f"============================================================")
         print(f"Input Directory  : {input_dir}")
         print(f"Total Files Found: {len(all_files)} ({len(valid_files)} non-empty)")
+        print(f"Align Mode       : {align_mode.upper()} (min_snr={min_snr}, max_step={max_step_px or 'auto'}, static_filter={static_filter})")
         print(f"FOV Mode         : {fov_mode.upper()}")
         print(f"Stretch Method   : {stretch_method.upper()} (factor={stretch_factor})")
         print(f"Output Directory : {output_dir}")
@@ -455,19 +808,22 @@ def combine_images(
 
     pixel_weights = None
     defect_bool = None
+    raw_defects_count = 0
+    masked_px_count = 0
 
-    # Pass 1: Star centroid detection
+    # Pass 1: Star candidate detection
     if verbose:
-        print(f"[*] Step 1/3: Detecting star centroids across {len(valid_files)} frames...")
+        print(f"[*] Step 1/3: Detecting star candidates across {len(valid_files)} frames...")
 
     write_progress(output_dir, "detecting", 1, 3, 0, len(valid_files), 0.0, f"Starting star detection (0/{len(valid_files)})")
 
-    detections = []
+    raw_frames: List[Dict[str, Any]] = []
     skipped_no_star = 0
     skipped_corrupt = 0
     frames_with_stripes = 0
     ref_shape = None
     channel_counts = {1: 0, 3: 0}
+    max_peaks_per_frame = 6 if align_mode == "constellation" else 1
 
     for idx, filepath in enumerate(valid_files):
         img = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
@@ -486,11 +842,11 @@ def combine_images(
                     binary_defects = extract_defect_mask(raw_defect_mask)
                     pixel_weights = build_defect_weights(binary_defects, radius=defect_radius, soft_px=defect_soft_px)
                     defect_bool = (pixel_weights == 0.0)
-                    raw_defects = int(np.sum(binary_defects > 0))
-                    masked_px = int(np.sum(defect_bool))
-                    pct_sensor = (masked_px / float(h0 * w0)) * 100.0
+                    raw_defects_count = int(np.sum(binary_defects > 0))
+                    masked_px_count = int(np.sum(defect_bool))
+                    pct_sensor = (masked_px_count / float(h0 * w0)) * 100.0
                     if verbose:
-                        print(f"[*] Defect mask ({os.path.basename(defect_mask_path)}): {raw_defects} defects -> {masked_px} px masked after dilation (r={defect_radius}), {pct_sensor:.2f}% of sensor")
+                        print(f"[*] Defect mask ({os.path.basename(defect_mask_path)}): {raw_defects_count} defects -> {masked_px_count} px masked after dilation (r={defect_radius}), {pct_sensor:.2f}% of sensor")
                     if pct_sensor > 5.0:
                         print(f"[!] Warning: Defect mask covers {pct_sensor:.2f}% of sensor (>5%). Consider a smaller --defect-radius or recalibration.")
                 else:
@@ -503,7 +859,6 @@ def combine_images(
             stripe_mask = stripe_rects_to_mask(stripe_rects, img.shape[0], img.shape[1])
             frames_with_stripes += 1
             if float(np.mean(stripe_mask)) > max_stripe_fraction:
-                # Frame is mostly garbage: drop it entirely
                 skipped_corrupt += 1
                 continue
 
@@ -516,16 +871,18 @@ def combine_images(
         else:
             exclude_mask = None
 
-        res = detect_star_centroid(img, exclude_mask=exclude_mask)
-        if res is not None:
-            cx, cy, peak, bg = res
-            detections.append({
+        cands = detect_star_candidates(
+            img,
+            max_peaks=max_peaks_per_frame,
+            min_snr=min_snr,
+            exclude_mask=exclude_mask,
+        )
+        if cands:
+            raw_frames.append({
+                "idx": idx,
                 "path": filepath,
                 "filename": os.path.basename(filepath),
-                "cx": cx,
-                "cy": cy,
-                "peak": peak,
-                "bg": bg,
+                "cands": cands,
                 "stripes": stripe_rects,
             })
         else:
@@ -537,34 +894,80 @@ def combine_images(
 
         if verbose and ((idx + 1) % 50 == 0 or (idx + 1) == len(valid_files)):
             pct = (idx + 1) / len(valid_files) * 100.0
-            print(f"    Progress: {idx + 1}/{len(valid_files)} ({pct:.1f}%) | Detected: {len(detections)} | Skipped: {skipped_no_star} | Striped: {frames_with_stripes}")
+            print(f"    Progress: {idx + 1}/{len(valid_files)} ({pct:.1f}%) | Frames w/ Peaks: {len(raw_frames)} | Skipped: {skipped_no_star} | Striped: {frames_with_stripes}")
 
-    if not detections:
+    if not raw_frames:
         raise RuntimeError("No stars detected in any of the provided frames.")
 
+    write_progress(output_dir, "geometry", 2, 3, 1, 1, 47.0, "Step 2/3: Matching constellation & trajectory...")
+
+    detections, align_stats = align_constellation_candidates(
+        raw_frames,
+        align_mode=align_mode,
+        max_step_px=max_step_px,
+        static_filter=static_filter,
+    )
+    if not detections:
+        raise RuntimeError("No frames passed constellation/trajectory alignment.")
+
+    skipped_after_align = len(valid_files) - len(detections) - skipped_corrupt
+    skipped_no_star = max(0, skipped_after_align)
+
     if verbose:
-        print(f"[*] Detection complete: {len(detections)} valid frames with guide star, {skipped_no_star} skipped (no star).")
+        print(f"[*] Alignment complete ({align_mode}): {len(detections)} aligned frames "
+              f"({align_stats['pair_matches']} multi-star, {align_stats['single_star_matches']} single-star, "
+              f"{align_stats['identity_swaps_prevented']} rank-swaps/handoffs resolved, "
+              f"{align_stats['static_peaks_rejected']} static warm clusters purged, "
+              f"{align_stats['skipped_step_gate']} gated out).")
         if filter_stripes:
             print(f"    Corruption stripes: {frames_with_stripes} frames affected (stripe pixels zero-weighted), {skipped_corrupt} frames dropped as mostly corrupt.")
 
-    write_progress(output_dir, "geometry", 2, 3, 1, 1, 48.0, "Step 2/3: Computing canvas geometry")
+    write_progress(output_dir, "geometry", 2, 3, 1, 1, 49.0, "Step 2/3: Computing canvas geometry")
 
-    # Pass 2: Compute canvas geometry and shifts
+    # Pass 2: Compute canvas geometry, drift orientation, and shifts
     h, w = ref_shape[:2]
-    # Set mosaic depth based on predominant frame format across detections
     num_channels = 3 if channel_counts.get(3, 0) > channel_counts.get(1, 0) else 1
     ref_cx = detections[0]["cx"]
     ref_cy = detections[0]["cy"]
 
     shifts = []
-    for d in detections:
+    drift_steps_dx = []
+    drift_steps_dy = []
+    for i_d, d in enumerate(detections):
         tx = ref_cx - d["cx"]
         ty = ref_cy - d["cy"]
         shifts.append((tx, ty))
+        if i_d > 0:
+            prev_d = detections[i_d - 1]
+            dt_idx = d.get("idx", i_d) - prev_d.get("idx", i_d - 1)
+            if 1 <= dt_idx <= 3:
+                sdx = (d["cx"] - prev_d["cx"]) / dt_idx
+                sdy = (d["cy"] - prev_d["cy"]) / dt_idx
+                step_mag = float(np.hypot(sdx, sdy))
+                if 0.1 <= step_mag <= 15.0:
+                    drift_steps_dx.append(sdx)
+                    drift_steps_dy.append(sdy)
+
+    drift_angle_deg: Optional[float] = None
+    drift_speed_px_per_frame: Optional[float] = None
+    if len(drift_steps_dx) >= 3:
+        med_dx = float(np.median(drift_steps_dx))
+        med_dy = float(np.median(drift_steps_dy))
+        if np.hypot(med_dx, med_dy) > 0.05:
+            drift_angle_deg = round(float(np.degrees(np.arctan2(med_dy, med_dx))) % 360.0, 1)
+            drift_speed_px_per_frame = round(float(np.hypot(med_dx, med_dy)), 3)
+    elif len(detections) >= 2:
+        net_dx = detections[-1]["cx"] - detections[0]["cx"]
+        net_dy = detections[-1]["cy"] - detections[0]["cy"]
+        if np.hypot(net_dx, net_dy) > 2.0:
+            drift_angle_deg = round(float(np.degrees(np.arctan2(net_dy, net_dx))) % 360.0, 1)
+
+    txs = [s[0] for s in shifts]
+    tys = [s[1] for s in shifts]
+    span_x = float(max(txs) - min(txs)) if txs else 0.0
+    span_y = float(max(tys) - min(tys)) if tys else 0.0
 
     if fov_mode == "full":
-        txs = [s[0] for s in shifts]
-        tys = [s[1] for s in shifts]
         min_tx, max_tx = min(txs), max(txs)
         min_ty, max_ty = min(tys), max(tys)
 
@@ -583,9 +986,9 @@ def combine_images(
         print(f"    Single Frame Resolution : {w} x {h}")
         print(f"    Mosaic Canvas Resolution: {canvas_w} x {canvas_h}")
         if fov_mode == "full":
-            span_x = max(txs) - min(txs)
-            span_y = max(tys) - min(tys)
             print(f"    Drift Span Covered      : X={span_x:.1f} px, Y={span_y:.1f} px")
+        if drift_angle_deg is not None:
+            print(f"    Measured Drift Angle    : {drift_angle_deg:.1f}° on sensor")
 
     # Pass 3: Warping and accumulation with weighted feathering
     if verbose:
@@ -722,6 +1125,9 @@ def combine_images(
         p_hdr_8 = os.path.join(output_dir, f"mosaic_hdr_{stretch_method}_8bit.png")
         cv2.imwrite(p_hdr_8, hdr_8bit)
         output_files["hdr_8bit_png"] = p_hdr_8
+        if stretch_method != "asinh":
+            p_hdr_default = os.path.join(output_dir, "mosaic_hdr_asinh_8bit.png")
+            cv2.imwrite(p_hdr_default, hdr_8bit)
 
         # 5. Coverage / Weight Map (heat map showing overlap count)
         w_norm = np.clip((weight_map / max(np.max(weight_map), 1.0)) * 255.0, 0, 255).astype(np.uint8)
@@ -732,6 +1138,48 @@ def combine_images(
         output_files["coverage_weights_png"] = p_weights
 
     elapsed = time.time() - t_start
+
+    mosaic_meta = {
+        "timestamp": time.time(),
+        "elapsed_sec": round(float(elapsed), 2),
+        "canvas_size": [int(canvas_w), int(canvas_h)],
+        "frame_size": [int(w), int(h)],
+        "total_files": int(len(all_files)),
+        "valid_files": int(len(valid_files)),
+        "aligned_frames": int(len(detections)),
+        "skipped_no_star": int(skipped_no_star),
+        "skipped_corrupt": int(skipped_corrupt),
+        "frames_with_stripes": int(frames_with_stripes),
+        "drift_span_px": [round(span_x, 1), round(span_y, 1)],
+        "drift_angle_deg": drift_angle_deg,
+        "drift_speed_px_per_frame": drift_speed_px_per_frame,
+        "defect_mask_used": bool(defect_bool is not None),
+        "raw_defects_count": int(raw_defects_count),
+        "masked_px_count": int(masked_px_count),
+        **align_stats,
+        "params": {
+            "align_mode": align_mode,
+            "min_snr": float(min_snr),
+            "max_step_px": float(max_step_px) if max_step_px is not None else None,
+            "static_filter": bool(static_filter),
+            "defect_radius": int(defect_radius),
+            "defect_soft_px": int(defect_soft_px),
+            "use_defect_mask": bool(use_defect_mask),
+            "feather_px": int(feather_px),
+            "stretch_method": stretch_method,
+            "stretch_factor": float(stretch_factor),
+            "fov_mode": fov_mode,
+        },
+    }
+
+    try:
+        meta_path = os.path.join(output_dir, "mosaic_meta.json")
+        with open(meta_path, "w") as mf:
+            json.dump(mosaic_meta, mf, indent=2)
+        output_files["mosaic_meta_json"] = meta_path
+    except Exception as e:
+        if verbose:
+            print(f"[!] Warning writing mosaic_meta.json: {e}")
 
     write_progress(output_dir, "ready", 3, 3, len(detections), len(detections), 100.0, "Mosaic complete")
 
@@ -751,6 +1199,7 @@ def combine_images(
         "valid_files": len(valid_files),
         "aligned_frames": len(detections),
         "skipped_frames": skipped_no_star,
+        "mosaic_meta": mosaic_meta,
         "output_files": output_files,
         "mosaic_linear": mosaic_linear,
         "mosaic_hdr": hdr_stretched if save_individual_renders else None,
@@ -779,6 +1228,29 @@ def parse_args():
         choices=["full", "first"],
         default="full",
         help="FOV mode: 'full' expands canvas to cover total drift; 'first' retains first frame FOV",
+    )
+    parser.add_argument(
+        "--align-mode",
+        choices=["constellation", "single"],
+        default="constellation",
+        help="Alignment algorithm: 'constellation' (multi-star + trajectory gating) or 'single' (brightest star only)",
+    )
+    parser.add_argument(
+        "--min-snr",
+        type=float,
+        default=3.0,
+        help="Minimum star peak-to-background SNR threshold",
+    )
+    parser.add_argument(
+        "--max-step-px",
+        type=float,
+        default=None,
+        help="Maximum allowed frame-to-frame step in pixels (default: Auto)",
+    )
+    parser.add_argument(
+        "--no-static-filter",
+        action="store_true",
+        help="Disable temporal static warm-pixel rejection across sequence",
     )
     parser.add_argument(
         "--feather",
@@ -859,4 +1331,8 @@ if __name__ == "__main__":
         save_individual_renders=True,
         verbose=True,
         filter_stripes=not args.no_stripe_filter,
+        align_mode=args.align_mode,
+        min_snr=args.min_snr,
+        max_step_px=args.max_step_px,
+        static_filter=not args.no_static_filter,
     )

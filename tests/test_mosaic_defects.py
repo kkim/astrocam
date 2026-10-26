@@ -326,3 +326,70 @@ def test_star_detection_excludes_defects(tmp_path):
     # Because the true star moved by 12 px in X, the full-FOV canvas width should expand by ~12 px
     canvas_w, canvas_h = res["canvas_size"]
     assert canvas_w >= w + 10, f"Expected canvas to expand with moving star (~132 px), got {canvas_w}"
+
+
+def test_constellation_rank_swap_and_static_warm_pixel(tmp_path):
+    """
+    6. Multi-star constellation + temporal static-peak rejection test:
+    Two stars separated by a constant offset (+32, +24) swap #1 brightness rank across
+    frames, while an unmasked stationary warm cluster sits at (140, 35) and outshines
+    both stars during a dim frame. Verifies that constellation mode rejects the static
+    warm cluster, resolves all rank swaps without 40px jumps, and aligns the sequence.
+    """
+    h, w = 180, 180
+    frames_dir = tmp_path / "constellation_frames"
+    os.makedirs(frames_dir, exist_ok=True)
+    yy, xx = np.indices((h, w), dtype=np.float64)
+
+    n_frames = 14
+    vec_ab = (32.0, 24.0)  # 40.0 px separation
+    static_warm = (140.0, 35.0)  # unmasked stationary warm cluster
+
+    for idx in range(n_frames):
+        dx = idx * 1.5
+        dy = idx * 1.0
+        # Star A and Star B alternate which one is #1 brightest
+        if idx % 2 == 0:
+            amp_a, amp_b = 9000.0, 7500.0
+        else:
+            amp_a, amp_b = 7200.0, 9500.0
+
+        # Frame 7 simulates a cloud dimming both stars below the static warm cluster
+        if idx == 7:
+            amp_a, amp_b = 2200.0, 2000.0
+
+        ax, ay = 40.0 + dx, 50.0 + dy
+        bx, by = ax + vec_ab[0], ay + vec_ab[1]
+
+        img = np.full((h, w), 100.0, dtype=np.float64)
+        img += amp_a * np.exp(-((xx - ax) ** 2 + (yy - ay) ** 2) / (2.0 * 1.8 ** 2))
+        img += amp_b * np.exp(-((xx - bx) ** 2 + (yy - by) ** 2) / (2.0 * 1.8 ** 2))
+        # Unmasked stationary warm cluster present in every frame
+        img += 4500.0 * np.exp(-((xx - static_warm[0]) ** 2 + (yy - static_warm[1]) ** 2) / (2.0 * 1.5 ** 2))
+
+        cv2.imwrite(str(frames_dir / f"frame_{idx:03d}.tif"), np.clip(img, 0, 65535).astype(np.uint16))
+
+    res = combine_images(
+        str(frames_dir),
+        output_dir=str(tmp_path / "out_const"),
+        fov_mode="full",
+        use_defect_mask=False,
+        save_individual_renders=False,
+        verbose=False,
+        filter_stripes=False,
+        align_mode="constellation",
+        min_snr=2.5,
+        static_filter=True,
+    )
+
+    meta = res["mosaic_meta"]
+    assert res["aligned_frames"] == n_frames
+    assert meta["constellation_stars"] >= 2
+    assert meta["static_peaks_rejected"] >= 1
+    assert meta["identity_swaps_prevented"] >= 5
+    # Total true drift is 13 * 1.5 = 19.5 px in X and 13 * 1.0 = 13.0 px in Y.
+    # If a 40px rank-swap or 100px hot-pixel jump had occurred, span would be > 50 px.
+    span_x, span_y = meta["drift_span_px"]
+    assert 17.5 <= span_x <= 21.5, f"Expected X drift span ~19.5 px without rank-swap jumps, got {span_x}"
+    assert 11.5 <= span_y <= 14.5, f"Expected Y drift span ~13.0 px without rank-swap jumps, got {span_y}"
+

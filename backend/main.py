@@ -19,7 +19,8 @@ import json
 import subprocess
 import threading
 import time
-from mosaic_service import get_session_mosaic_info, trigger_mosaic_stitching
+import struct
+from mosaic_service import get_session_mosaic_info, trigger_mosaic_stitching, MOSAIC_SUBDIR
 
 app = FastAPI()
 
@@ -86,9 +87,10 @@ def list_captures():
                 time_str = dt.strftime("%H:%M:%S")
                 dt_str = f"{date_str} {time_str}"
 
-            # Nav info (target / coordinates)
+            # Nav info (target / coordinates / notes)
             target_name = ""
             camera_settings = {}
+            s_nav = {}
             session_nav_file = os.path.join(s_dir, "nav.json")
             if os.path.exists(session_nav_file):
                 try:
@@ -108,6 +110,7 @@ def list_captures():
                 "dt_str": dt_str,
                 "target_name": target_name,
                 "camera_settings": camera_settings,
+                "nav": s_nav,
             }
             _SESSION_META_CACHE[s_name] = (dir_mtime, s_meta)
 
@@ -141,6 +144,7 @@ def list_captures():
 
         # Mosaic availability info
         mosaic_info = get_session_mosaic_info(s_dir, s_name)
+        nav_info = mosaic_info.get("nav") or s_meta.get("nav") or {}
 
         preview_exists = os.path.exists(thumb_path)
         sm_exists = os.path.exists(thumb_sm_path)
@@ -150,7 +154,13 @@ def list_captures():
             "id": s_name,
             "type": "sequence",
             "name": s_name,
-            "target": s_meta["target_name"],
+            "target": nav_info.get("target") or s_meta["target_name"],
+            "stars": nav_info.get("stars", ""),
+            "ra": nav_info.get("ra"),
+            "dec": nav_info.get("dec"),
+            "orientation": nav_info.get("orientation", ""),
+            "note": nav_info.get("note", ""),
+            "nav": nav_info,
             "camera_settings": s_meta["camera_settings"],
             "time": s_meta["time_str"],
             "date": s_meta["date_str"],
@@ -167,6 +177,7 @@ def list_captures():
             "mosaic_mtime": mosaic_info["mosaic_mtime"],
             "mosaic_progress": mosaic_info.get("mosaic_progress"),
             "mosaic_queue_pos": mosaic_info.get("mosaic_queue_pos", 0),
+            "mosaic_meta": mosaic_info.get("mosaic_meta"),
             "mtime": dir_mtime
         })
 
@@ -221,12 +232,65 @@ def list_captures():
     items.sort(key=lambda x: (x.get("datetime", ""), x.get("mtime", 0)), reverse=True)
     return items[:30]
 
+
+class MosaicGenerateRequest(BaseModel):
+    force: bool = False
+    align_mode: Optional[str] = None
+    min_snr: Optional[float] = None
+    max_step_px: Optional[float] = None
+    static_filter: Optional[bool] = None
+    defect_radius: Optional[int] = None
+    defect_soft_px: Optional[int] = None
+    use_defect_mask: Optional[bool] = None
+    feather_px: Optional[int] = None
+    stretch_method: Optional[str] = None
+    stretch_factor: Optional[float] = None
+    fov_mode: Optional[str] = None
+
+
 @app.post("/mosaic/generate/{session_id}")
-def generate_mosaic(session_id: str):
+def generate_mosaic(session_id: str, req: Optional[MosaicGenerateRequest] = None):
     s_dir = os.path.join(CAPTURES_DIR, session_id)
     if not os.path.isdir(s_dir):
         return {"success": False, "error": f"Session {session_id} not found"}
-    return trigger_mosaic_stitching(session_id, s_dir)
+    opts = req.model_dump(exclude_none=True) if req else {}
+    return trigger_mosaic_stitching(session_id, s_dir, options=opts)
+
+
+class StackNoteUpdate(BaseModel):
+    target: Optional[str] = None
+    stars: Optional[str] = None
+    ra: Optional[float] = None
+    dec: Optional[float] = None
+    orientation: Optional[str] = None
+    note: Optional[str] = None
+
+
+@app.post("/mosaic/note/{session_id}")
+def update_stack_note(session_id: str, req: StackNoteUpdate):
+    s_dir = os.path.join(CAPTURES_DIR, session_id)
+    if not os.path.isdir(s_dir):
+        return {"success": False, "error": f"Session {session_id} not found"}
+    nav_path = os.path.join(s_dir, "nav.json")
+    nav_data = {}
+    if os.path.exists(nav_path):
+        try:
+            with open(nav_path, "r") as f:
+                nav_data = json.load(f)
+        except Exception:
+            nav_data = {}
+    updates = req.model_dump(exclude_unset=True)
+    for k, v in updates.items():
+        nav_data[k] = v
+    try:
+        tmp_path = nav_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(nav_data, f, indent=2)
+        os.replace(tmp_path, nav_path)
+        _SESSION_META_CACHE.pop(session_id, None)
+        return {"success": True, "nav": nav_data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.get("/mosaic/status/{session_id}")
 def get_mosaic_status(session_id: str):
@@ -234,6 +298,65 @@ def get_mosaic_status(session_id: str):
     if not os.path.isdir(s_dir):
         return {"status": "none"}
     return get_session_mosaic_info(s_dir, session_id)
+
+@app.get("/mosaic/linear16/{session_id}")
+def get_mosaic_linear16(session_id: str):
+    s_dir = os.path.join(CAPTURES_DIR, session_id)
+    tif_path = os.path.join(s_dir, MOSAIC_SUBDIR, "mosaic_linear_16bit.tif")
+    if not os.path.exists(tif_path):
+        fallback_path = os.path.join(s_dir, "mosaic", "mosaic_linear_16bit.tif")
+        if os.path.exists(fallback_path):
+            tif_path = fallback_path
+        else:
+            return Response(content="16-bit linear mosaic not found", status_code=404)
+
+    img = cv2.imread(tif_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        return Response(content="Failed to decode 16-bit mosaic", status_code=500)
+
+    if img.dtype == np.uint8:
+        img = img.astype(np.uint16) * 257
+    elif img.dtype != np.uint16:
+        img = np.clip(img, 0, 65535).astype(np.uint16)
+
+    if img.ndim == 3:
+        if img.shape[2] == 4:
+            img = img[:, :, :3]
+        b_ch = img[:, :, 0].astype(np.int32)
+        g_ch = img[:, :, 1].astype(np.int32)
+        r_ch = img[:, :, 2].astype(np.int32)
+        if np.max(np.abs(b_ch - g_ch)) <= 3 and np.max(np.abs(b_ch - r_ch)) <= 3:
+            img = img[:, :, 1]
+            channels = 1
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            channels = 3
+    else:
+        channels = 1
+
+    h, w = img.shape[:2]
+    valid = img[img > 0]
+    if valid.size > 0:
+        sample = valid[::4] if valid.size > 500000 else valid
+        min_nz = int(np.min(valid))
+        max_val = int(np.max(valid))
+        med = float(np.median(sample))
+        mad = float(np.median(np.abs(sample - med)))
+        sigma = max(1.0, 1.4826 * mad)
+        p05 = float(np.percentile(sample, 0.5))
+        p999 = float(np.percentile(sample, 99.95))
+        auto_min = int(max(min_nz, min(p05, med - 1.5 * sigma)))
+        auto_max = int(max(auto_min + 16, p999))
+    else:
+        min_nz, max_val, auto_min, auto_max = 0, 65535, 0, 65535
+
+    header = struct.pack("<8I", 0x36314D41, w, h, channels, auto_min, auto_max, min_nz, max_val)
+    arr_le = np.ascontiguousarray(img, dtype="<u2")
+    return Response(
+        content=header + arr_le.tobytes(),
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-cache"}
+    )
 
 # Configuration persistence
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")

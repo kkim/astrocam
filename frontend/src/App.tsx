@@ -128,11 +128,76 @@ interface MotorStatus {
   is_ramping?: boolean;
 }
 
+interface MosaicMeta {
+  timestamp?: number;
+  elapsed_sec?: number;
+  canvas_size?: [number, number];
+  frame_size?: [number, number];
+  total_files?: number;
+  valid_files?: number;
+  aligned_frames?: number;
+  skipped_no_star?: number;
+  skipped_corrupt?: number;
+  skipped_step_gate?: number;
+  frames_with_stripes?: number;
+  drift_span_px?: [number, number];
+  drift_angle_deg?: number | null;
+  drift_speed_px_per_frame?: number | null;
+  pair_angle_deg?: number | null;
+  constellation_stars?: number;
+  constellation_offsets?: [number, number][];
+  pair_matches?: number;
+  single_star_matches?: number;
+  identity_swaps_prevented?: number;
+  static_peaks_rejected?: number;
+  static_peak_coords?: [number, number, number][];
+  defect_mask_used?: boolean;
+  raw_defects_count?: number;
+  masked_px_count?: number;
+  align_mode?: string;
+  params?: {
+    align_mode?: 'constellation' | 'single';
+    min_snr?: number;
+    max_step_px?: number | null;
+    static_filter?: boolean;
+    defect_radius?: number;
+    defect_soft_px?: number;
+    use_defect_mask?: boolean;
+    feather_px?: number;
+    stretch_method?: string;
+    stretch_factor?: number;
+    fov_mode?: string;
+  };
+}
+
+interface SessionNavInfo {
+  target?: string;
+  stars?: string;
+  ra?: number;
+  dec?: number;
+  altitude?: number;
+  azimuth?: number;
+  latitude?: number;
+  longitude?: number;
+  focal_length_mm?: number;
+  pixel_size_um?: number;
+  orientation?: string;
+  note?: string;
+  utc?: string;
+  camera_settings?: Record<string, any>;
+}
+
 interface GalleryItem {
   id: string;
   type?: 'sequence' | 'image';
   name?: string;
   target?: string;
+  stars?: string;
+  ra?: number;
+  dec?: number;
+  orientation?: string;
+  note?: string;
+  nav?: SessionNavInfo;
   time?: string;
   date?: string;
   datetime?: string;
@@ -157,6 +222,7 @@ interface GalleryItem {
     total?: number;
   };
   mosaic_queue_pos?: number;
+  mosaic_meta?: MosaicMeta;
 }
 
 const formatGalleryItem = (item: any): GalleryItem => {
@@ -271,9 +337,20 @@ const GalleryCard = memo(({ item, onSelect }: { item: GalleryItem; onSelect: (it
       )}
 
       <div className="capture-label">
-        {item.target && (
+        {(item.stars || item.target) && (
           <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: '11px', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            ✨ {item.target}
+            ✨ {item.stars || item.target}
+          </div>
+        )}
+        {(item.ra !== undefined || item.orientation) && (
+          <div style={{ fontSize: '10px', color: '#a5d6ff', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {item.ra !== undefined && item.dec !== undefined ? `RA ${Number(item.ra).toFixed(2)}° Dec ${Number(item.dec).toFixed(2)}°` : ''}
+            {item.orientation ? `${item.ra !== undefined ? ' · ' : ''}🧭 ${item.orientation}` : ''}
+          </div>
+        )}
+        {item.note && (
+          <div style={{ fontSize: '10px', color: '#d2a8ff', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.note}>
+            📝 {item.note}
           </div>
         )}
         {item.camera_settings && Object.keys(item.camera_settings).length > 0 && (
@@ -299,10 +376,1062 @@ const GalleryCard = memo(({ item, onSelect }: { item: GalleryItem; onSelect: (it
   prev.item.mosaic_queue_pos === next.item.mosaic_queue_pos &&
   prev.item.mosaic_progress?.percent === next.item.mosaic_progress?.percent &&
   prev.item.mosaic_progress?.message === next.item.mosaic_progress?.message &&
-  prev.item.target === next.item.target
+  prev.item.target === next.item.target &&
+  prev.item.stars === next.item.stars &&
+  prev.item.orientation === next.item.orientation &&
+  prev.item.note === next.item.note &&
+  prev.item.ra === next.item.ra &&
+  prev.item.dec === next.item.dec
 ));
 
+interface Linear16MosaicData {
+  width: number;
+  height: number;
+  channels: number;
+  autoMin: number;
+  autoMax: number;
+  minNz: number;
+  maxVal: number;
+  pixels: Uint16Array;
+  histogram: number[];
+}
+
+const MosaicViewerModal = ({
+  item,
+  onClose,
+  isStandaloneTab = false,
+}: {
+  item: GalleryItem;
+  onClose: () => void;
+  isStandaloneTab?: boolean;
+}) => {
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [mosaicData, setMosaicData] = useState<Linear16MosaicData | null>(null);
+  const [minPoint, setMinPoint] = useState<number>(0);
+  const [maxPoint, setMaxPoint] = useState<number>(65535);
+  const [activeHandle, setActiveHandle] = useState<'min' | 'max' | null>(null);
+  const [zoom, setZoom] = useState<number>(1);
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; val: number } | null>(null);
+
+  // Stack Note, Orientation, Diagnostics & Stitch Controls state
+  const [showInfoPanel, setShowInfoPanel] = useState<boolean>(true);
+  const [showStitchControls, setShowStitchControls] = useState<boolean>(false);
+  const [mosaicMeta, setMosaicMeta] = useState<MosaicMeta | null>(item.mosaic_meta || null);
+  const [navInfo, setNavInfo] = useState<SessionNavInfo>(item.nav || {});
+  const [mosaicStatus, setMosaicStatus] = useState<string>(item.mosaic_status || 'ready');
+  const [mosaicProgress, setMosaicProgress] = useState<{ percent: number; message?: string; stage?: string } | null>(
+    item.mosaic_progress || null
+  );
+  const [reloadCounter, setReloadCounter] = useState<number>(0);
+
+  // Stack Note form fields
+  const [noteStars, setNoteStars] = useState<string>(item.stars || item.target || '');
+  const [noteRa, setNoteRa] = useState<string>(item.ra !== undefined ? String(item.ra) : '');
+  const [noteDec, setNoteDec] = useState<string>(item.dec !== undefined ? String(item.dec) : '');
+  const [noteOrientation, setNoteOrientation] = useState<string>(item.orientation || '');
+  const [noteText, setNoteText] = useState<string>(item.note || '');
+  const [noteSaving, setNoteSaving] = useState<boolean>(false);
+  const [noteSaveMsg, setNoteSaveMsg] = useState<string>('');
+  const noteInitializedRef = useRef<boolean>(false);
+
+  // Stitch parameters
+  const [alignMode, setAlignMode] = useState<'constellation' | 'single'>('constellation');
+  const [minSnr, setMinSnr] = useState<number>(3.0);
+  const [maxStepPx, setMaxStepPx] = useState<number>(0); // 0 = Auto
+  const [staticFilter, setStaticFilter] = useState<boolean>(true);
+  const [defectRadius, setDefectRadius] = useState<number>(1);
+  const [useDefectMask, setUseDefectMask] = useState<boolean>(true);
+  const [featherPx, setFeatherPx] = useState<number>(12);
+  const paramsInitializedRef = useRef<boolean>(false);
+
+  const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const histCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const minPointRef = useRef<number>(0);
+  const maxPointRef = useRef<number>(65535);
+  const dragPointerRef = useRef<{ lastX: number } | null>(null);
+  const panDragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+
+  useEffect(() => {
+    const titleLabel = noteStars || item.target || '';
+    if (isStandaloneTab) {
+      document.title = `Mosaic • ${titleLabel ? titleLabel + ' • ' : ''}${item.datetime || item.id}`;
+      return;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose, isStandaloneTab, noteStars, item.target, item.datetime, item.id]);
+
+  // Fetch mosaic status, diagnostics, and stack note metadata; poll while processing/queued
+  useEffect(() => {
+    let active = true;
+    let timer: any = null;
+
+    const pollStatus = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/mosaic/status/${encodeURIComponent(item.id)}`);
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        if (!active) return;
+
+        if (data.mosaic_meta) {
+          setMosaicMeta(data.mosaic_meta);
+          if (!paramsInitializedRef.current && data.mosaic_meta.params) {
+            paramsInitializedRef.current = true;
+            const p = data.mosaic_meta.params;
+            if (p.align_mode) setAlignMode(p.align_mode);
+            if (p.min_snr !== undefined) setMinSnr(p.min_snr);
+            if (p.max_step_px !== undefined && p.max_step_px !== null) setMaxStepPx(p.max_step_px);
+            if (p.static_filter !== undefined) setStaticFilter(p.static_filter);
+            if (p.defect_radius !== undefined) setDefectRadius(p.defect_radius);
+            if (p.use_defect_mask !== undefined) setUseDefectMask(p.use_defect_mask);
+            if (p.feather_px !== undefined) setFeatherPx(p.feather_px);
+          }
+        }
+
+        if (data.nav) {
+          setNavInfo(data.nav);
+          if (!noteInitializedRef.current) {
+            noteInitializedRef.current = true;
+            setNoteStars(data.nav.stars || data.nav.target || item.target || '');
+            setNoteRa(data.nav.ra !== undefined && data.nav.ra !== null ? String(data.nav.ra) : '');
+            setNoteDec(data.nav.dec !== undefined && data.nav.dec !== null ? String(data.nav.dec) : '');
+            if (data.nav.orientation) {
+              setNoteOrientation(data.nav.orientation);
+            } else if (data.mosaic_meta?.drift_angle_deg !== undefined && data.mosaic_meta?.drift_angle_deg !== null) {
+              setNoteOrientation(`Drift ${data.mosaic_meta.drift_angle_deg}° on sensor`);
+            }
+            setNoteText(data.nav.note || '');
+          }
+        }
+
+        const nextStatus = data.mosaic_status || 'none';
+        setMosaicProgress(data.mosaic_progress || null);
+
+        setMosaicStatus((prevStatus) => {
+          if ((prevStatus === 'processing' || prevStatus === 'queued') && nextStatus === 'ready') {
+            setReloadCounter((c) => c + 1);
+          }
+          return nextStatus;
+        });
+
+        if (nextStatus === 'processing' || nextStatus === 'queued') {
+          timer = setTimeout(pollStatus, 1000);
+        }
+      } catch {
+        // ignore transient network errors
+      }
+    };
+
+    pollStatus();
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [item.id, item.target, mosaicStatus]);
+
+  const handleSaveStackNote = async () => {
+    setNoteSaving(true);
+    setNoteSaveMsg('');
+    try {
+      const parsedRa = noteRa.trim() !== '' ? parseFloat(noteRa) : undefined;
+      const parsedDec = noteDec.trim() !== '' ? parseFloat(noteDec) : undefined;
+      const payload: Record<string, any> = {
+        target: noteStars.trim(),
+        stars: noteStars.trim(),
+        orientation: noteOrientation.trim(),
+        note: noteText.trim(),
+      };
+      if (parsedRa !== undefined && !isNaN(parsedRa)) payload.ra = parsedRa;
+      if (parsedDec !== undefined && !isNaN(parsedDec)) payload.dec = parsedDec;
+
+      const res = await fetch(`${API_BASE}/mosaic/note/${encodeURIComponent(item.id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (data.nav) setNavInfo(data.nav);
+        setNoteSaveMsg('Saved!');
+        setTimeout(() => setNoteSaveMsg(''), 2500);
+      } else {
+        setNoteSaveMsg(data.error || 'Save failed');
+      }
+    } catch (e: any) {
+      setNoteSaveMsg(`Error: ${e.message}`);
+    } finally {
+      setNoteSaving(false);
+    }
+  };
+
+  const handleTriggerRemosaic = async () => {
+    setError(null);
+    setMosaicStatus('processing');
+    setMosaicProgress({ percent: 0, message: 'Starting remosaic...', stage: 'starting' });
+    try {
+      const res = await fetch(`${API_BASE}/mosaic/generate/${encodeURIComponent(item.id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          force: true,
+          align_mode: alignMode,
+          min_snr: minSnr,
+          max_step_px: maxStepPx > 0 ? maxStepPx : null,
+          static_filter: staticFilter,
+          defect_radius: defectRadius,
+          use_defect_mask: useDefectMask,
+          feather_px: featherPx,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        setError(data.error || 'Failed to start remosaic');
+        setMosaicStatus('ready');
+      }
+    } catch (e: any) {
+      setError(`Remosaic error: ${e.message}`);
+      setMosaicStatus('ready');
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    fetch(`${API_BASE}/mosaic/linear16/${encodeURIComponent(item.id)}?t=${reloadCounter}`)
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`Failed to load 16-bit linear mosaic (HTTP ${res.status})`);
+        }
+        return res.arrayBuffer();
+      })
+      .then((buffer) => {
+        if (cancelled) return;
+        if (buffer.byteLength < 32) {
+          throw new Error('Invalid 16-bit mosaic buffer');
+        }
+        const header = new Uint32Array(buffer, 0, 8);
+        const magic = header[0];
+        if (magic !== 0x36314d41) {
+          throw new Error('Unrecognized 16-bit mosaic format header');
+        }
+        const width = header[1];
+        const height = header[2];
+        const channels = header[3];
+        const autoMin = header[4];
+        const autoMax = header[5];
+        const minNz = header[6];
+        const maxVal = header[7];
+
+        const pixels = new Uint16Array(buffer, 32, width * height * channels);
+
+        // Compute 256-bin histogram over valid (>0) 16-bit pixels (0..65535 -> bin = v >>> 8)
+        const hist = new Array<number>(256).fill(0);
+        if (channels === 1) {
+          for (let i = 0; i < pixels.length; i++) {
+            const v = pixels[i];
+            if (v > 0) hist[v >>> 8]++;
+          }
+        } else {
+          for (let i = 0; i < pixels.length; i += 3) {
+            const r = pixels[i];
+            const g = pixels[i + 1];
+            const b = pixels[i + 2];
+            const lum = (r + g + b) / 3;
+            if (lum > 0) hist[lum >>> 8]++;
+          }
+        }
+
+        minPointRef.current = autoMin;
+        maxPointRef.current = autoMax;
+        setMinPoint(autoMin);
+        setMaxPoint(autoMax);
+        setMosaicData({
+          width,
+          height,
+          channels,
+          autoMin,
+          autoMax,
+          minNz,
+          maxVal,
+          pixels,
+          histogram: hist,
+        });
+        setLoading(false);
+      })
+      .catch((err: any) => {
+        if (!cancelled) {
+          setError(err.message || 'Error loading 16-bit mosaic');
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id, reloadCounter]);
+
+  // Render 16-bit pixels through [minPoint, maxPoint] LUT onto the display canvas
+  useEffect(() => {
+    if (!mosaicData || !imageCanvasRef.current) return;
+    const cvs = imageCanvasRef.current;
+    const { width, height, channels, pixels } = mosaicData;
+    if (cvs.width !== width) cvs.width = width;
+    if (cvs.height !== height) cvs.height = height;
+    const ctx = cvs.getContext('2d');
+    if (!ctx) return;
+
+    const lut = new Uint8Array(65536);
+    const minP = Math.max(0, Math.min(65534, minPoint));
+    const maxP = Math.max(minP + 1, Math.min(65535, maxPoint));
+    const invSpan = 255.0 / (maxP - minP);
+
+    for (let v = 1; v < 65536; v++) {
+      if (v <= minP) lut[v] = 0;
+      else if (v >= maxP) lut[v] = 255;
+      else lut[v] = ((v - minP) * invSpan + 0.5) | 0;
+    }
+    lut[0] = 0;
+
+    const imgData = ctx.createImageData(width, height);
+    if (channels === 1) {
+      const out32 = new Uint32Array(imgData.data.buffer);
+      const len = width * height;
+      for (let i = 0; i < len; i++) {
+        const g = lut[pixels[i]];
+        out32[i] = 0xff000000 | (g << 16) | (g << 8) | g;
+      }
+    } else {
+      const out8 = imgData.data;
+      const len = width * height;
+      for (let i = 0, p = 0, q = 0; i < len; i++, p += 3, q += 4) {
+        out8[q] = lut[pixels[p]];
+        out8[q + 1] = lut[pixels[p + 1]];
+        out8[q + 2] = lut[pixels[p + 2]];
+        out8[q + 3] = 255;
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }, [mosaicData, minPoint, maxPoint]);
+
+  // Draw bottom-right 256-bin histogram & min/max cursors (matching live stream histogram style)
+  useEffect(() => {
+    if (!mosaicData || !histCanvasRef.current) return;
+    const cvs = histCanvasRef.current;
+    const w = 512;
+    const h = 54;
+    if (cvs.width !== w) cvs.width = w;
+    if (cvs.height !== h) cvs.height = h;
+    const ctx = cvs.getContext('2d');
+    if (!ctx) return;
+
+    const yAxis = 44;
+    ctx.clearRect(0, 0, w, h);
+
+    const data = mosaicData.histogram;
+    const n = data.length;
+    if (n === 0) return;
+
+    const logCounts = data.map((c) => (c > 0 ? Math.log10(c + 1) : 0));
+    const maxLog = Math.max(...logCounts, 1.0);
+    const barW = w / n;
+
+    ctx.fillStyle = '#58a6ff';
+    for (let i = 0; i < n; i++) {
+      if (logCounts[i] <= 0) continue;
+      const barH = Math.max(1, Math.round((logCounts[i] / maxLog) * (yAxis - 2)));
+      const x = i * barW;
+      ctx.fillRect(x, yAxis - barH, barW, barH);
+    }
+
+    // Horizontal baseline x-axis
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.fillRect(0, yAxis, w, 1);
+
+    // Ticks below x-axis
+    for (let i = 0; i < n; i++) {
+      const x = Math.round(i * barW);
+      if (i % 64 === 0) {
+        ctx.fillStyle = '#e6edf3';
+        ctx.fillRect(x - 1, yAxis + 1, 2, 7);
+      } else if (i % 16 === 0) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.fillRect(x, yAxis + 1, 1, 4);
+      }
+    }
+
+    // Draw Min Point handle (Sky Blue cursor & pointer)
+    const bx = Math.max(1, Math.min(w - 2, Math.round((minPoint / 65535) * w)));
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(bx - 1, 0, 2, yAxis);
+    ctx.beginPath();
+    ctx.moveTo(bx - 4, yAxis + 9);
+    ctx.lineTo(bx + 4, yAxis + 9);
+    ctx.lineTo(bx, yAxis + 1);
+    ctx.fill();
+
+    // Draw Max Point handle (Amber cursor & pointer)
+    const wx = Math.max(1, Math.min(w - 2, Math.round((maxPoint / 65535) * w)));
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(wx - 1, 0, 2, yAxis);
+    ctx.beginPath();
+    ctx.moveTo(wx - 4, yAxis + 9);
+    ctx.lineTo(wx + 4, yAxis + 9);
+    ctx.lineTo(wx, yAxis + 1);
+    ctx.fill();
+  }, [mosaicData, minPoint, maxPoint]);
+
+  const handleHistPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const val = Math.max(0, Math.min(65535, Math.round((x / rect.width) * 65535)));
+
+    const distMin = Math.abs(val - minPointRef.current);
+    const distMax = Math.abs(val - maxPointRef.current);
+
+    dragPointerRef.current = { lastX: e.clientX };
+
+    if (distMin <= distMax) {
+      const nextMin = Math.min(val, maxPointRef.current - 1);
+      minPointRef.current = nextMin;
+      setMinPoint(nextMin);
+      setActiveHandle('min');
+    } else {
+      const nextMax = Math.max(val, minPointRef.current + 1);
+      maxPointRef.current = nextMax;
+      setMaxPoint(nextMax);
+      setActiveHandle('max');
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleHistPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
+    if (!activeHandle) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+
+    if (e.shiftKey && dragPointerRef.current) {
+      // Fine-grain adjustment when holding Shift
+      const dx = e.clientX - dragPointerRef.current.lastX;
+      dragPointerRef.current.lastX = e.clientX;
+      const step = Math.round((dx / rect.width) * 4096);
+      if (activeHandle === 'min') {
+        const nextMin = Math.max(0, Math.min(maxPointRef.current - 1, minPointRef.current + step));
+        minPointRef.current = nextMin;
+        setMinPoint(nextMin);
+      } else {
+        const nextMax = Math.min(65535, Math.max(minPointRef.current + 1, maxPointRef.current + step));
+        maxPointRef.current = nextMax;
+        setMaxPoint(nextMax);
+      }
+      return;
+    }
+
+    dragPointerRef.current = { lastX: e.clientX };
+    const x = e.clientX - rect.left;
+    const val = Math.max(0, Math.min(65535, Math.round((x / rect.width) * 65535)));
+
+    if (activeHandle === 'min') {
+      const nextMin = Math.min(val, maxPointRef.current - 1);
+      minPointRef.current = nextMin;
+      setMinPoint(nextMin);
+    } else if (activeHandle === 'max') {
+      const nextMax = Math.max(val, minPointRef.current + 1);
+      maxPointRef.current = nextMax;
+      setMaxPoint(nextMax);
+    }
+  };
+
+  const handleHistPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
+    setActiveHandle(null);
+    dragPointerRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleApplyAutoStretch = () => {
+    if (!mosaicData) return;
+    minPointRef.current = mosaicData.autoMin;
+    maxPointRef.current = mosaicData.autoMax;
+    setMinPoint(mosaicData.autoMin);
+    setMaxPoint(mosaicData.autoMax);
+  };
+
+  const handleResetFullRange = () => {
+    minPointRef.current = 0;
+    maxPointRef.current = 65535;
+    setMinPoint(0);
+    setMaxPoint(65535);
+  };
+
+  const handleWheelCanvas = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+    setZoom((prev) => {
+      const next = Math.max(1, Math.min(12, +(prev * factor).toFixed(2)));
+      if (next === 1) setPan({ x: 0, y: 0 });
+      return next;
+    });
+  };
+
+  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('.stream-histogram, .mosaic-viewer-header, .mosaic-side-panel')) return;
+    panDragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (mosaicData && imageCanvasRef.current) {
+      const rect = imageCanvasRef.current.getBoundingClientRect();
+      const px = Math.floor(((e.clientX - rect.left) / rect.width) * mosaicData.width);
+      const py = Math.floor(((e.clientY - rect.top) / rect.height) * mosaicData.height);
+      if (px >= 0 && px < mosaicData.width && py >= 0 && py < mosaicData.height) {
+        const idx = (py * mosaicData.width + px) * mosaicData.channels;
+        const val =
+          mosaicData.channels === 1
+            ? mosaicData.pixels[idx]
+            : Math.round(
+                (mosaicData.pixels[idx] + mosaicData.pixels[idx + 1] + mosaicData.pixels[idx + 2]) / 3
+              );
+        setHoverInfo({ x: px, y: py, val });
+      } else {
+        setHoverInfo(null);
+      }
+    }
+
+    if (!panDragRef.current) return;
+    const dx = e.clientX - panDragRef.current.startX;
+    const dy = e.clientY - panDragRef.current.startY;
+    setPan({ x: panDragRef.current.panX + dx, y: panDragRef.current.panY + dy });
+  };
+
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    panDragRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const tifDownloadUrl = `${API_BASE}/captures/${item.id}/mosaic_v1/mosaic_linear_16bit.tif`;
+  const isStitching = mosaicStatus === 'processing' || mosaicStatus === 'queued';
+  const displayTarget = noteStars || navInfo.target || item.target || '';
+
+  return (
+    <div className="mosaic-viewer-backdrop" onClick={onClose}>
+      <div
+        className="mosaic-viewer-Stage"
+        onClick={(e) => e.stopPropagation()}
+        onWheel={handleWheelCanvas}
+        onPointerDown={handleCanvasPointerDown}
+        onPointerMove={handleCanvasPointerMove}
+        onPointerUp={handleCanvasPointerUp}
+        onPointerCancel={handleCanvasPointerUp}
+      >
+        <div className="mosaic-viewer-header">
+          <div className="mosaic-viewer-title">
+            <Sparkles size={16} color="#58a6ff" />
+            <span>{displayTarget ? `${displayTarget} • ` : ''}{item.datetime || item.id}</span>
+            {mosaicData && (
+              <span className="mosaic-viewer-meta">
+                {mosaicData.width}×{mosaicData.height} • 16-bit Linear ({mosaicMeta?.aligned_frames ?? item.frames ?? 1}
+                {mosaicMeta?.valid_files ? `/${mosaicMeta.valid_files}` : ''} frames)
+              </span>
+            )}
+            {mosaicMeta && (
+              <span className="mosaic-diag-pill" title="Alignment diagnostic summary">
+                {mosaicMeta.constellation_stars && mosaicMeta.constellation_stars > 1
+                  ? `${mosaicMeta.constellation_stars}-Star Constellation`
+                  : '1-Star Track'}
+                {mosaicMeta.identity_swaps_prevented ? ` • ${mosaicMeta.identity_swaps_prevented} swaps resolved` : ''}
+                {mosaicMeta.static_peaks_rejected ? ` • ${mosaicMeta.static_peaks_rejected} warm px rejected` : ''}
+              </span>
+            )}
+          </div>
+          <div className="mosaic-viewer-actions">
+            <button
+              type="button"
+              className={`mosaic-viewer-btn ${showInfoPanel ? 'active' : ''}`}
+              onClick={() => setShowInfoPanel((v) => !v)}
+              title="Toggle Stack Note, Coordinates, Orientation & Diagnostics"
+            >
+              <Compass size={14} /> Stack Note & Info
+            </button>
+            <button
+              type="button"
+              className={`mosaic-viewer-btn ${showStitchControls ? 'active' : ''}`}
+              onClick={() => setShowStitchControls((v) => !v)}
+              title="Configure alignment & mosaic parameters"
+            >
+              <Sliders size={14} /> Stitch Controls
+            </button>
+            <button
+              type="button"
+              className="mosaic-viewer-btn remosaic"
+              onClick={handleTriggerRemosaic}
+              disabled={isStitching}
+              title="Re-run star alignment and re-stitch this mosaic with current settings"
+            >
+              <RefreshCw size={14} className={isStitching ? 'spin' : ''} />
+              {isStitching
+                ? mosaicProgress?.percent
+                  ? `Remosaicing ${Math.round(mosaicProgress.percent)}%`
+                  : 'Remosaicing...'
+                : 'Remosaic'}
+            </button>
+            {zoom > 1 && (
+              <button
+                type="button"
+                className="mosaic-viewer-btn"
+                onClick={() => {
+                  setZoom(1);
+                  setPan({ x: 0, y: 0 });
+                }}
+              >
+                Reset Zoom ({zoom.toFixed(1)}×)
+              </button>
+            )}
+            <a
+              href={tifDownloadUrl}
+              download={`${item.id}_mosaic_linear_16bit.tif`}
+              className="mosaic-viewer-btn"
+              title="Download raw 16-bit linear TIFF"
+            >
+              Download 16-bit TIFF
+            </a>
+            {!isStandaloneTab && (
+              <button
+                type="button"
+                className="mosaic-viewer-btn close"
+                onClick={onClose}
+                title="Close viewer (Esc)"
+              >
+                <X size={16} /> Close
+              </button>
+            )}
+          </div>
+        </div>
+
+        {isStitching && (
+          <div className="mosaic-live-progress-banner">
+            <div className="mosaic-live-progress-text">
+              <RefreshCw size={13} className="spin" />
+              <span>{mosaicProgress?.message || 'Processing mosaic alignment...'}</span>
+              <strong>{Math.round(mosaicProgress?.percent || 0)}%</strong>
+            </div>
+            <div className="mosaic-live-progress-track">
+              <div
+                className="mosaic-live-progress-fill"
+                style={{ width: `${Math.min(100, Math.max(3, mosaicProgress?.percent || 3))}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {(showInfoPanel || showStitchControls) && (
+          <div
+            className="mosaic-side-panel"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            {showInfoPanel && (
+              <div className="mosaic-panel-card">
+                <div className="mosaic-panel-title">
+                  <span>✨ Stack Note & Orientation</span>
+                  {navInfo.altitude !== undefined && navInfo.azimuth !== undefined && (
+                    <span className="mosaic-panel-sub">
+                      Alt {Number(navInfo.altitude).toFixed(1)}° · Az {Number(navInfo.azimuth).toFixed(1)}°
+                    </span>
+                  )}
+                </div>
+
+                <div className="mosaic-form-grid">
+                  <label className="mosaic-field full">
+                    <span>Stars / Target Name</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. Menkalinan (β Aur), Companion stars..."
+                      value={noteStars}
+                      onChange={(e) => setNoteStars(e.target.value)}
+                    />
+                  </label>
+                  <label className="mosaic-field">
+                    <span>RA (°)</span>
+                    <input
+                      type="number"
+                      step="any"
+                      placeholder="e.g. 89.882"
+                      value={noteRa}
+                      onChange={(e) => setNoteRa(e.target.value)}
+                    />
+                  </label>
+                  <label className="mosaic-field">
+                    <span>Dec (°)</span>
+                    <input
+                      type="number"
+                      step="any"
+                      placeholder="e.g. 44.947"
+                      value={noteDec}
+                      onChange={(e) => setNoteDec(e.target.value)}
+                    />
+                  </label>
+                  <label className="mosaic-field full">
+                    <span style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>Picture Orientation (Camera Roll / Drift)</span>
+                      {mosaicMeta?.drift_angle_deg !== undefined && mosaicMeta?.drift_angle_deg !== null && (
+                        <span
+                          style={{ color: '#58a6ff', cursor: 'pointer' }}
+                          onClick={() =>
+                            setNoteOrientation(
+                              `Drift ${mosaicMeta.drift_angle_deg}° on sensor${
+                                mosaicMeta.pair_angle_deg !== null && mosaicMeta.pair_angle_deg !== undefined
+                                  ? ` (Pair ${mosaicMeta.pair_angle_deg}°)`
+                                  : ''
+                              }`
+                            )
+                          }
+                          title="Click to insert measured sensor drift angle"
+                        >
+                          Measured: {mosaicMeta.drift_angle_deg}°
+                        </span>
+                      )}
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="e.g. Camera rotated ~31° CCW; West drift is 121°"
+                      value={noteOrientation}
+                      onChange={(e) => setNoteOrientation(e.target.value)}
+                    />
+                  </label>
+                  <label className="mosaic-field full">
+                    <span>Stack Note</span>
+                    <textarea
+                      rows={2}
+                      placeholder="Quick notes for this stack (seeing, clouds, star pair, camera angle...)"
+                      value={noteText}
+                      onChange={(e) => setNoteText(e.target.value)}
+                    />
+                  </label>
+                </div>
+
+                <div className="mosaic-panel-footer">
+                  <span className="mosaic-save-msg">{noteSaveMsg}</span>
+                  <button
+                    type="button"
+                    className="mosaic-panel-btn primary"
+                    onClick={handleSaveStackNote}
+                    disabled={noteSaving}
+                  >
+                    <Save size={12} /> {noteSaving ? 'Saving...' : 'Save Note'}
+                  </button>
+                </div>
+
+                {mosaicMeta && (
+                  <div className="mosaic-diag-box">
+                    <div className="mosaic-diag-header">Alignment Diagnostics</div>
+                    <div className="mosaic-diag-row">
+                      <span>Aligned Frames:</span>
+                      <strong>
+                        {mosaicMeta.aligned_frames} / {mosaicMeta.valid_files}{' '}
+                        ({mosaicMeta.valid_files ? ((mosaicMeta.aligned_frames! / mosaicMeta.valid_files) * 100).toFixed(1) : 100}%)
+                      </strong>
+                    </div>
+                    <div className="mosaic-diag-row">
+                      <span>Constellation Stars:</span>
+                      <strong>
+                        {mosaicMeta.constellation_stars || 1} ({mosaicMeta.pair_matches || 0} multi-star,{' '}
+                        {mosaicMeta.single_star_matches || 0} single)
+                      </strong>
+                    </div>
+                    <div className="mosaic-diag-row">
+                      <span>Rank Swaps Prevented:</span>
+                      <strong style={{ color: (mosaicMeta.identity_swaps_prevented || 0) > 0 ? '#3fb950' : undefined }}>
+                        {mosaicMeta.identity_swaps_prevented ?? 0}
+                      </strong>
+                    </div>
+                    <div className="mosaic-diag-row">
+                      <span>Warm Peaks / Gate:</span>
+                      <strong>
+                        {mosaicMeta.static_peaks_rejected ?? 0} static purged • {mosaicMeta.skipped_step_gate ?? 0} gated
+                      </strong>
+                    </div>
+                    <div className="mosaic-diag-row">
+                      <span>Sensor Drift & Angle:</span>
+                      <strong>
+                        {mosaicMeta.drift_span_px ? `${mosaicMeta.drift_span_px[0]}×${mosaicMeta.drift_span_px[1]} px` : '—'}
+                        {mosaicMeta.drift_angle_deg !== null && mosaicMeta.drift_angle_deg !== undefined
+                          ? ` • ${mosaicMeta.drift_angle_deg}°`
+                          : ''}
+                        {mosaicMeta.pair_angle_deg !== null && mosaicMeta.pair_angle_deg !== undefined
+                          ? ` (Pair ${mosaicMeta.pair_angle_deg}°)`
+                          : ''}
+                      </strong>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {showStitchControls && (
+              <div className="mosaic-panel-card">
+                <div className="mosaic-panel-title">
+                  <span>⚙️ Mosaic Stitch Controls</span>
+                  <span className="mosaic-panel-sub">
+                    {mosaicMeta?.elapsed_sec ? `${mosaicMeta.elapsed_sec.toFixed(1)}s` : ''}
+                  </span>
+                </div>
+
+                <div className="mosaic-form-grid">
+                  <label className="mosaic-field full">
+                    <span>Tracking Algorithm</span>
+                    <select
+                      value={alignMode}
+                      onChange={(e) => setAlignMode(e.target.value as 'constellation' | 'single')}
+                    >
+                      <option value="constellation">Constellation + Trajectory (Multi-Star)</option>
+                      <option value="single">Single Brightest Star (Legacy)</option>
+                    </select>
+                  </label>
+                  <label className="mosaic-field">
+                    <span>Min Star SNR ({minSnr.toFixed(1)})</span>
+                    <input
+                      type="number"
+                      min={1.5}
+                      max={10.0}
+                      step={0.5}
+                      value={minSnr}
+                      onChange={(e) => setMinSnr(Math.max(1.0, parseFloat(e.target.value) || 3.0))}
+                    />
+                  </label>
+                  <label className="mosaic-field">
+                    <span>Max Step Gate (0=Auto)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={500}
+                      step={5}
+                      value={maxStepPx}
+                      onChange={(e) => setMaxStepPx(Math.max(0, parseFloat(e.target.value) || 0))}
+                    />
+                  </label>
+                  <label className="mosaic-field">
+                    <span>Defect Radius (px)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={4}
+                      step={1}
+                      value={defectRadius}
+                      onChange={(e) => setDefectRadius(Math.max(0, Math.min(4, parseInt(e.target.value) || 0)))}
+                    />
+                  </label>
+                  <label className="mosaic-field">
+                    <span>Seam Feather (px)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={60}
+                      step={2}
+                      value={featherPx}
+                      onChange={(e) => setFeatherPx(Math.max(0, parseInt(e.target.value) || 0))}
+                    />
+                  </label>
+                </div>
+
+                <div className="mosaic-toggle-row">
+                  <button
+                    type="button"
+                    className={`mosaic-chip-btn ${staticFilter ? 'active' : ''}`}
+                    onClick={() => setStaticFilter((v) => !v)}
+                    title="Automatically reject stationary warm pixels that stay at fixed sensor coordinates across the sequence"
+                  >
+                    Static Warm-Px Filter: {staticFilter ? 'ON' : 'OFF'}
+                  </button>
+                  <button
+                    type="button"
+                    className={`mosaic-chip-btn ${useDefectMask ? 'active' : ''}`}
+                    onClick={() => setUseDefectMask((v) => !v)}
+                    title="Apply dark baseline defect mask and neighbor dilation"
+                  >
+                    Dark Defect Mask: {useDefectMask ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+
+                <div className="mosaic-panel-footer">
+                  <button
+                    type="button"
+                    className="mosaic-panel-btn primary full"
+                    onClick={handleTriggerRemosaic}
+                    disabled={isStitching}
+                  >
+                    <RefreshCw size={12} className={isStitching ? 'spin' : ''} />
+                    {isStitching ? 'Remosaicing...' : 'Remosaic with Settings'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mosaic-viewer-canvas-wrap">
+          {loading && <div className="mosaic-viewer-status">Loading 16-bit Linear Mosaic...</div>}
+          {error && <div className="mosaic-viewer-status error">{error}</div>}
+          <canvas
+            ref={imageCanvasRef}
+            className="mosaic-viewer-canvas"
+            style={{
+              display: mosaicData && !loading ? 'block' : 'none',
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            }}
+          />
+        </div>
+
+        {mosaicData && (
+          <div className="stream-overlay" style={{ top: '58px', right: '16px' }}>
+            <span>
+              Range: [{minPoint} – {maxPoint}] / 65535
+            </span>
+            <span>
+              Valid Min/Max: {mosaicData.minNz} – {mosaicData.maxVal}
+            </span>
+            {hoverInfo && (
+              <span style={{ color: '#58a6ff', fontWeight: 600 }}>
+                Cursor ({hoverInfo.x}, {hoverInfo.y}): {hoverInfo.val} ADU
+              </span>
+            )}
+          </div>
+        )}
+
+        {mosaicData && (
+          <div
+            className="stream-histogram mosaic-viewer-histogram"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+          >
+            <div className="mosaic-hist-controls">
+              <span
+                className="stream-histogram-label"
+                title="Drag sky-blue (min) or amber (max) cursor on histogram, or hold Shift while dragging for fine 16-bit adjustment."
+              >
+                HIST (16-BIT LINEAR) • [{minPoint}–{maxPoint}]
+              </span>
+              <div className="mosaic-minmax-inputs">
+                <label className="minmax-field min">
+                  <span>Min</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={maxPoint - 1}
+                    step={10}
+                    value={minPoint}
+                    onChange={(e) => {
+                      const v = Math.max(0, Math.min(maxPoint - 1, parseInt(e.target.value) || 0));
+                      minPointRef.current = v;
+                      setMinPoint(v);
+                    }}
+                  />
+                </label>
+                <label className="minmax-field max">
+                  <span>Max</span>
+                  <input
+                    type="number"
+                    min={minPoint + 1}
+                    max={65535}
+                    step={50}
+                    value={maxPoint}
+                    onChange={(e) => {
+                      const v = Math.min(65535, Math.max(minPoint + 1, parseInt(e.target.value) || 1));
+                      maxPointRef.current = v;
+                      setMaxPoint(v);
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="hist-mini-btn"
+                  onClick={handleApplyAutoStretch}
+                  title={`Auto stretch (${mosaicData.autoMin} – ${mosaicData.autoMax})`}
+                >
+                  Auto
+                </button>
+                <button
+                  type="button"
+                  className="hist-mini-btn"
+                  onClick={handleResetFullRange}
+                  title="Full 16-bit range (0 – 65535)"
+                >
+                  0–65535
+                </button>
+              </div>
+            </div>
+            <canvas
+              ref={histCanvasRef}
+              width={512}
+              height={54}
+              className="stream-histogram-canvas"
+              title="Drag sky-blue (min) or amber (max) cursor to stretch 16-bit linear mosaic. Hold Shift while dragging for 10x finer control. Double-click to toggle Auto / Full."
+              onPointerDown={handleHistPointerDown}
+              onPointerMove={handleHistPointerMove}
+              onPointerUp={handleHistPointerUp}
+              onPointerCancel={handleHistPointerUp}
+              onDoubleClick={() => {
+                if (minPoint === 0 && maxPoint === 65535) {
+                  handleApplyAutoStretch();
+                } else {
+                  handleResetFullRange();
+                }
+              }}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 function App() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const standaloneMosaicId = urlParams.get('mosaic');
+  if (standaloneMosaicId) {
+    const standaloneItem: GalleryItem = {
+      id: standaloneMosaicId,
+      type: 'sequence',
+      target: urlParams.get('target') || undefined,
+      datetime: urlParams.get('datetime') || standaloneMosaicId,
+      frames: urlParams.get('frames') ? parseInt(urlParams.get('frames')!, 10) : undefined,
+      thumbnail: '',
+      url: '',
+      has_mosaic: true,
+      mosaic_status: 'ready',
+    };
+    return (
+      <MosaicViewerModal
+        item={standaloneItem}
+        onClose={() => window.close()}
+        isStandaloneTab={true}
+      />
+    );
+  }
+
+  return <DashboardApp />;
+}
+
+function DashboardApp() {
   const [controls, setControls] = useState<Controls>({
     brightness: 0, contrast: 50, saturation: 0, gain: 64,
     exposure: 1000, sharpness: 50, gamma: 100, average: 1, auto_exposure: 0
@@ -1373,8 +2502,11 @@ function App() {
     }
 
     if (item.mosaic_status === 'ready' && item.mosaic_url) {
-      const cacheBust = item.mosaic_mtime ? `?t=${Math.floor(item.mosaic_mtime)}` : `?t=${Date.now()}`;
-      window.open(`${item.mosaic_url}${cacheBust}`, '_blank');
+      const params = new URLSearchParams({ mosaic: item.id });
+      if (item.target) params.set('target', item.target);
+      if (item.datetime) params.set('datetime', item.datetime);
+      if (item.frames !== undefined) params.set('frames', String(item.frames));
+      window.open(`${window.location.origin}${window.location.pathname}?${params.toString()}`, '_blank');
       return;
     }
 
