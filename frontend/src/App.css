@@ -1289,6 +1289,17 @@ input[type="number"] {
   color: #fde047;
 }
 
+.mosaic-viewer-btn.delete {
+  border-color: rgba(248, 81, 73, 0.4);
+  color: #f85149;
+}
+
+.mosaic-viewer-btn.delete:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.2);
+  border-color: #f85149;
+  color: #ff7b72;
+}
+
 .mosaic-hist-save-btn {
   background: rgba(88, 166, 255, 0.15);
   border: 1px solid rgba(88, 166, 255, 0.4);

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, memo } from 'react';
 import './App.css';
-import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles, Save, Clock, Star } from 'lucide-react';
+import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles, Save, Clock, Star, Trash2 } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -453,10 +453,12 @@ const MosaicViewerModal = ({
   item,
   onClose,
   isStandaloneTab = false,
+  onDelete,
 }: {
   item: GalleryItem;
   onClose: () => void;
   isStandaloneTab?: boolean;
+  onDelete?: (id: string) => void;
 }) => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -476,6 +478,7 @@ const MosaicViewerModal = ({
   const navInfoRef = useRef<SessionNavInfo>(item.nav || {});
   const [isFavorite, setIsFavorite] = useState<boolean>(Boolean(item.favorite || item.nav?.favorite));
   const [viewSavedMsg, setViewSavedMsg] = useState<string>('');
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [mosaicStatus, setMosaicStatus] = useState<string>(item.mosaic_status || 'ready');
   const [mosaicProgress, setMosaicProgress] = useState<{ percent: number; message?: string; stage?: string } | null>(
     item.mosaic_progress || null
@@ -883,6 +886,40 @@ const MosaicViewerModal = ({
     } catch (e: any) {
       setError(`Remosaic error: ${e.message}`);
       setMosaicStatus('ready');
+    }
+  };
+
+  const handleDeleteMosaic = async () => {
+    const label = noteStars || navInfo.target || item.target || item.datetime || item.id;
+    const frameText = item.frames ? ` (${item.frames} frame${item.frames > 1 ? 's' : ''})` : '';
+    const confirmed = window.confirm(
+      `Permanently delete "${label}"${frameText} and all associated files?\n\nWarning: This action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`${API_BASE}/mosaic/${encodeURIComponent(item.id)}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (data.success) {
+        onDelete?.(item.id);
+        if (isStandaloneTab) {
+          window.close();
+          setTimeout(() => {
+            window.location.href = `${window.location.origin}${window.location.pathname}`;
+          }, 300);
+        } else {
+          onClose();
+        }
+      } else {
+        alert(`Failed to delete capture: ${data.error || 'Unknown error'}`);
+        setIsDeleting(false);
+      }
+    } catch (e: any) {
+      alert(`Error deleting capture: ${e.message}`);
+      setIsDeleting(false);
     }
   };
 
@@ -1521,6 +1558,16 @@ const MosaicViewerModal = ({
             >
               Download 16-bit TIFF
             </a>
+            <button
+              type="button"
+              className="mosaic-viewer-btn delete"
+              onClick={handleDeleteMosaic}
+              disabled={isDeleting || isStitching}
+              title="Permanently delete this stack and its mosaic"
+            >
+              <Trash2 size={14} />
+              <span>{isDeleting ? 'Deleting...' : 'Delete'}</span>
+            </button>
             {!isStandaloneTab && (
               <button
                 type="button"

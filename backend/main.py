@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 import struct
+import shutil
 from mosaic_service import get_session_mosaic_info, trigger_mosaic_stitching, MOSAIC_SUBDIR
 
 app = FastAPI()
@@ -582,6 +583,46 @@ def update_stack_note(session_id: str, req: StackNoteUpdate):
         os.replace(tmp_path, nav_path)
         _SESSION_META_CACHE.pop(session_id, None)
         return {"success": True, "nav": nav_data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/capture/{capture_id}")
+@app.delete("/mosaic/{capture_id}")
+def delete_capture(capture_id: str):
+    # Prevent path traversal
+    target_path = os.path.abspath(os.path.join(CAPTURES_DIR, capture_id))
+    if os.path.commonpath([CAPTURES_DIR, target_path]) != CAPTURES_DIR or target_path == CAPTURES_DIR:
+        return {"success": False, "error": "Invalid capture ID"}
+
+    if not os.path.exists(target_path):
+        return {"success": False, "error": f"Capture {capture_id} not found"}
+
+    try:
+        if os.path.isdir(target_path):
+            shutil.rmtree(target_path)
+        else:
+            os.remove(target_path)
+            sidecar = target_path + ".nav.json"
+            if os.path.exists(sidecar):
+                try:
+                    os.remove(sidecar)
+                except Exception:
+                    pass
+
+        # Remove thumbnail files if present
+        thumb_dir = os.path.join(CAPTURES_DIR, "thumbnails")
+        for t_name in [f"{capture_id}.jpg", f"{capture_id}_sm.jpg"]:
+            t_path = os.path.join(thumb_dir, t_name)
+            if os.path.exists(t_path):
+                try:
+                    os.remove(t_path)
+                except Exception:
+                    pass
+
+        _SESSION_META_CACHE.pop(capture_id, None)
+        event_logger.log(f"Deleted capture: {capture_id}")
+        return {"success": True, "id": capture_id}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
