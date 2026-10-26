@@ -38,11 +38,17 @@ os.makedirs(CAPTURES_DIR, exist_ok=True)
 # Mount captures for viewing
 app.mount("/captures", StaticFiles(directory=CAPTURES_DIR), name="captures")
 
+# Cache static session metadata keyed by s_name -> (dir_mtime, meta_dict)
+_SESSION_META_CACHE = {}
+
 @app.get("/gallery")
 def list_captures():
     base_dir = CAPTURES_DIR
     if not os.path.exists(base_dir):
         return []
+
+    thumb_dir = os.path.join(base_dir, "thumbnails")
+    os.makedirs(thumb_dir, exist_ok=True)
 
     items = []
     # 1. Sequence recording sessions
@@ -51,74 +57,108 @@ def list_captures():
         if not os.path.isdir(s_dir):
             continue
         s_name = os.path.basename(s_dir)
-        files = sorted([
-            f for f in os.listdir(s_dir)
-            if not f.startswith(".") and f != "thumb.jpg" and f.lower().endswith((".tif", ".tiff", ".jpg", ".jpeg", ".png"))
-        ])
-        if not files:
-            continue
+        dir_mtime = os.path.getmtime(s_dir)
 
-        first_frame = files[0]
-        fmt = first_frame.rsplit(".", 1)[-1].lower()
-        thumb_dir = os.path.join(base_dir, "thumbnails")
-        os.makedirs(thumb_dir, exist_ok=True)
+        cached = _SESSION_META_CACHE.get(s_name)
+        if cached and cached[0] == dir_mtime:
+            s_meta = cached[1]
+        else:
+            files = sorted([
+                f for f in os.listdir(s_dir)
+                if not f.startswith(".") and f != "thumb.jpg" and f.lower().endswith((".tif", ".tiff", ".jpg", ".jpeg", ".png"))
+            ])
+            if not files:
+                continue
+
+            first_frame = files[0]
+            fmt = first_frame.rsplit(".", 1)[-1].lower()
+
+            # Parse date and time
+            parts = s_name.replace("session_", "").split("_")
+            if len(parts) >= 2 and len(parts[0]) == 8 and len(parts[1]) >= 6:
+                ymd, hms = parts[0], parts[1]
+                date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
+                time_str = f"{hms[:2]}:{hms[2:4]}:{hms[4:6]}"
+                dt_str = f"{date_str} {time_str}"
+            else:
+                dt = datetime.fromtimestamp(dir_mtime)
+                date_str = dt.strftime("%Y-%m-%d")
+                time_str = dt.strftime("%H:%M:%S")
+                dt_str = f"{date_str} {time_str}"
+
+            # Nav info (target / coordinates)
+            target_name = ""
+            camera_settings = {}
+            session_nav_file = os.path.join(s_dir, "nav.json")
+            if os.path.exists(session_nav_file):
+                try:
+                    with open(session_nav_file, "r") as f:
+                        s_nav = json.load(f)
+                        target_name = s_nav.get("target", "")
+                        camera_settings = s_nav.get("camera_settings", {})
+                except Exception:
+                    pass
+
+            s_meta = {
+                "frames": len(files),
+                "first_frame": first_frame,
+                "fmt": fmt,
+                "date_str": date_str,
+                "time_str": time_str,
+                "dt_str": dt_str,
+                "target_name": target_name,
+                "camera_settings": camera_settings,
+            }
+            _SESSION_META_CACHE[s_name] = (dir_mtime, s_meta)
+
+        first_frame = s_meta["first_frame"]
+        fmt = s_meta["fmt"]
         thumb_path = os.path.join(thumb_dir, f"{s_name}.jpg")
+        thumb_sm_path = os.path.join(thumb_dir, f"{s_name}_sm.jpg")
 
-        # Auto-generate Full HD preview/thumbnail if missing
-        if not os.path.exists(thumb_path):
+        # Auto-generate Full HD preview and lightweight 360x202 grid thumbnail if missing
+        if not os.path.exists(thumb_path) or not os.path.exists(thumb_sm_path):
             try:
-                img = cv2.imread(os.path.join(s_dir, first_frame), cv2.IMREAD_UNCHANGED)
-                if img is not None:
-                    if img.dtype == np.uint16:
-                        img = np.clip(img / 257.0, 0, 255).astype(np.uint8)
-                    cv2.imwrite(thumb_path, img, [cv2.IMWRITE_JPEG_QUALITY, 99])
+                src_img = None
+                if os.path.exists(thumb_path):
+                    src_img = cv2.imread(thumb_path, cv2.IMREAD_COLOR)
+                if src_img is None:
+                    raw_img = cv2.imread(os.path.join(s_dir, first_frame), cv2.IMREAD_UNCHANGED)
+                    if raw_img is not None:
+                        if raw_img.dtype == np.uint16:
+                            raw_img = np.clip(raw_img / 257.0, 0, 255).astype(np.uint8)
+                        src_img = raw_img
+                        if not os.path.exists(thumb_path):
+                            cv2.imwrite(thumb_path, src_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if src_img is not None and not os.path.exists(thumb_sm_path):
+                    h_img, w_img = src_img.shape[:2]
+                    sm_w = 360
+                    sm_h = max(1, int(round(h_img * (sm_w / float(w_img)))))
+                    sm_img = cv2.resize(src_img, (sm_w, sm_h), interpolation=cv2.INTER_AREA)
+                    cv2.imwrite(thumb_sm_path, sm_img, [cv2.IMWRITE_JPEG_QUALITY, 82])
             except Exception as e:
                 event_logger.log(f"Error creating thumbnail for {s_name}: {e}")
-
-        # Parse date and time
-        parts = s_name.replace("session_", "").split("_")
-        if len(parts) >= 2 and len(parts[0]) == 8 and len(parts[1]) >= 6:
-            ymd, hms = parts[0], parts[1]
-            date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
-            time_str = f"{hms[:2]}:{hms[2:4]}:{hms[4:6]}"
-            dt_str = f"{date_str} {time_str}"
-        else:
-            dt = datetime.fromtimestamp(os.path.getmtime(s_dir))
-            date_str = dt.strftime("%Y-%m-%d")
-            time_str = dt.strftime("%H:%M:%S")
-            dt_str = f"{date_str} {time_str}"
 
         # Mosaic availability info
         mosaic_info = get_session_mosaic_info(s_dir, s_name)
 
-        # Nav info (target / coordinates)
-        target_name = ""
-        camera_settings = {}
-        session_nav_file = os.path.join(s_dir, "nav.json")
-        if os.path.exists(session_nav_file):
-            try:
-                with open(session_nav_file, "r") as f:
-                    s_nav = json.load(f)
-                    target_name = s_nav.get("target", "")
-                    camera_settings = s_nav.get("camera_settings", {})
-            except Exception:
-                pass
-
-        thumb_exists = os.path.exists(thumb_path)
-        thumb_url = f"/captures/thumbnails/{s_name}.jpg" if thumb_exists else f"/captures/{s_name}/{first_frame}"
+        preview_exists = os.path.exists(thumb_path)
+        sm_exists = os.path.exists(thumb_sm_path)
+        preview_url = f"/captures/thumbnails/{s_name}.jpg" if preview_exists else f"/captures/{s_name}/{first_frame}"
+        thumb_url = f"/captures/thumbnails/{s_name}_sm.jpg" if sm_exists else preview_url
         items.append({
             "id": s_name,
             "type": "sequence",
             "name": s_name,
-            "target": target_name,
-            "camera_settings": camera_settings,
-            "time": time_str,
-            "date": date_str,
-            "datetime": dt_str,
-            "frames": len(files),
+            "target": s_meta["target_name"],
+            "camera_settings": s_meta["camera_settings"],
+            "time": s_meta["time_str"],
+            "date": s_meta["date_str"],
+            "datetime": s_meta["dt_str"],
+            "frames": s_meta["frames"],
             "first_frame": first_frame,
             "thumbnail": thumb_url,
-            "url": mosaic_info["mosaic_url"] if mosaic_info["has_mosaic"] else (thumb_url if fmt in ("tif", "tiff") else f"/captures/{s_name}/{first_frame}"),
+            "url": mosaic_info["mosaic_url"] if mosaic_info["has_mosaic"] else (preview_url if fmt in ("tif", "tiff") else f"/captures/{s_name}/{first_frame}"),
             "first_frame_url": f"/captures/{s_name}/{first_frame}",
             "format": fmt,
             "has_mosaic": mosaic_info["has_mosaic"],
@@ -127,7 +167,7 @@ def list_captures():
             "mosaic_mtime": mosaic_info["mosaic_mtime"],
             "mosaic_progress": mosaic_info.get("mosaic_progress"),
             "mosaic_queue_pos": mosaic_info.get("mosaic_queue_pos", 0),
-            "mtime": os.path.getmtime(s_dir)
+            "mtime": dir_mtime
         })
 
     # 2. Standalone captures (e.g. panorama_*.jpg, seq_*.jpg, etc.)
@@ -177,8 +217,8 @@ def list_captures():
             "mtime": mtime
         })
 
-    # Sort newest first and return latest 30 captures
-    items.sort(key=lambda x: x["mtime"], reverse=True)
+    # Sort by capture datetime (latest shown first) and return latest 30 captures
+    items.sort(key=lambda x: (x.get("datetime", ""), x.get("mtime", 0)), reverse=True)
     return items[:30]
 
 @app.post("/mosaic/generate/{session_id}")

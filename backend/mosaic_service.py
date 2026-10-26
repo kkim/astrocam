@@ -10,6 +10,7 @@ import threading
 from typing import Dict, Any, Optional, List, Tuple
 from logger import event_logger
 
+MOSAIC_SUBDIR = "mosaic_v1"
 ACTIVE_SESSION: Optional[str] = None
 QUEUED_SESSIONS: List[Tuple[str, str]] = []
 JOB_QUEUE: queue.Queue = queue.Queue()
@@ -18,7 +19,7 @@ LOCK = threading.Lock()
 
 def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
     """Checks the mosaic status and live progress of a session directory."""
-    mosaic_dir = os.path.join(s_dir, "mosaic")
+    mosaic_dir = os.path.join(s_dir, MOSAIC_SUBDIR)
     mosaic_hdr_path = os.path.join(mosaic_dir, "mosaic_hdr_asinh_8bit.png")
     real_mosaic_marker = os.path.join(mosaic_dir, "mosaic_linear_16bit.tif")
     proc_marker = os.path.join(mosaic_dir, ".processing")
@@ -37,7 +38,7 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
         return {
             "has_mosaic": True,
             "mosaic_status": "ready",
-            "mosaic_url": f"/captures/{session_id}/mosaic/mosaic_hdr_asinh_8bit.png",
+            "mosaic_url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png",
             "mosaic_mtime": os.path.getmtime(mosaic_hdr_path),
             "mosaic_progress": {"percent": 100, "message": "Mosaic ready", "stage": "ready"},
             "mosaic_queue_pos": 0,
@@ -49,7 +50,7 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
         return {
             "has_mosaic": False,
             "mosaic_status": "queued",
-            "mosaic_url": f"/captures/{session_id}/mosaic/mosaic_hdr_asinh_8bit.png",
+            "mosaic_url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png",
             "mosaic_mtime": mtime,
             "mosaic_progress": {
                 "percent": 0,
@@ -85,7 +86,7 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
         return {
             "has_mosaic": False,
             "mosaic_status": "processing",
-            "mosaic_url": f"/captures/{session_id}/mosaic/mosaic_hdr_asinh_8bit.png",
+            "mosaic_url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png",
             "mosaic_mtime": mtime,
             "mosaic_progress": progress_data,
             "mosaic_queue_pos": 0,
@@ -180,13 +181,17 @@ def _queue_worker_loop():
             ACTIVE_SESSION = session_id
             QUEUED_SESSIONS[:] = [(qid, qdir) for qid, qdir in QUEUED_SESSIONS if qid != session_id]
 
-        output_dir = os.path.join(s_dir, "mosaic")
+        output_dir = os.path.join(s_dir, MOSAIC_SUBDIR)
         proc_marker = os.path.join(output_dir, ".processing")
         progress_file = os.path.join(output_dir, ".progress.json")
         mosaic_hdr_path = os.path.join(output_dir, "mosaic_hdr_asinh_8bit.png")
         real_mosaic_marker = os.path.join(output_dir, "mosaic_linear_16bit.tif")
 
         try:
+            if os.path.exists(real_mosaic_marker):
+                event_logger.log(f"Mosaic: {session_id} already completed in {MOSAIC_SUBDIR}, skipping.")
+                continue
+
             with open(proc_marker, "w") as f:
                 f.write(str(time.time()))
 
@@ -249,7 +254,7 @@ def trigger_mosaic_stitching(session_id: str, s_dir: str) -> Dict[str, Any]:
     Submits a mosaic creation job to the single-worker background queue.
     Guarantees only one mosaic runs at a time to protect CPU and RAM.
     """
-    output_dir = os.path.join(s_dir, "mosaic")
+    output_dir = os.path.join(s_dir, MOSAIC_SUBDIR)
     proc_marker = os.path.join(output_dir, ".processing")
     mosaic_hdr_path = os.path.join(output_dir, "mosaic_hdr_asinh_8bit.png")
     real_mosaic_marker = os.path.join(output_dir, "mosaic_linear_16bit.tif")
@@ -262,17 +267,17 @@ def trigger_mosaic_stitching(session_id: str, s_dir: str) -> Dict[str, Any]:
                 "status": "ready",
                 "message": "Mosaic is ready",
                 "queue_pos": 0,
-                "url": f"/captures/{session_id}/mosaic/mosaic_hdr_asinh_8bit.png"
+                "url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png"
             }
 
         # If currently actively running
-        if session_id == ACTIVE_SESSION or (ACTIVE_SESSION is None and os.path.exists(proc_marker)):
+        if session_id == ACTIVE_SESSION or os.path.exists(proc_marker):
             return {
                 "success": True,
                 "status": "processing",
                 "message": "Mosaic is currently processing",
                 "queue_pos": 0,
-                "url": f"/captures/{session_id}/mosaic/mosaic_hdr_asinh_8bit.png"
+                "url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png"
             }
 
         # If already queued in line
@@ -284,7 +289,7 @@ def trigger_mosaic_stitching(session_id: str, s_dir: str) -> Dict[str, Any]:
                     "status": "queued",
                     "message": f"Mosaic is queued (#{queue_pos} in line)",
                     "queue_pos": queue_pos,
-                    "url": f"/captures/{session_id}/mosaic/mosaic_hdr_asinh_8bit.png"
+                    "url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png"
                 }
 
         files = sorted([
@@ -320,5 +325,5 @@ def trigger_mosaic_stitching(session_id: str, s_dir: str) -> Dict[str, Any]:
         "status": status_str,
         "message": msg,
         "queue_pos": pos,
-        "url": f"/captures/{session_id}/mosaic/mosaic_hdr_asinh_8bit.png"
+        "url": f"/captures/{session_id}/{MOSAIC_SUBDIR}/mosaic_hdr_asinh_8bit.png"
     }

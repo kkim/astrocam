@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
 import './App.css';
 import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles, Save, Clock } from 'lucide-react';
 
@@ -194,6 +194,113 @@ const formatGalleryItem = (item: any): GalleryItem => {
     has_mosaic: !!item.has_mosaic
   };
 };
+
+const GalleryCard = memo(({ item, onSelect }: { item: GalleryItem; onSelect: (item: GalleryItem) => void }) => {
+  const isSeq = item.type === 'sequence';
+  const statusDesc = item.mosaic_status === 'ready' 
+    ? 'Ready (Click to View)' 
+    : item.mosaic_status === 'processing' 
+      ? (item.mosaic_progress?.message || 'Processing...') 
+      : item.mosaic_status === 'queued'
+        ? `Queued (#${item.mosaic_queue_pos || 1} in line)`
+        : 'Not Created (Click to Stitch Mosaic)';
+  const titleTip = isSeq
+    ? `${item.datetime || item.id} • ${item.frames || 1} frames • Mosaic: ${statusDesc}`
+    : `${item.datetime || item.id} • Single frame`;
+
+  return (
+    <div 
+      className="capture-item" 
+      title={titleTip} 
+      onClick={() => onSelect(item)}
+    >
+      <img src={item.thumbnail} alt={item.datetime || item.id} loading="lazy" decoding="async" />
+      
+      {isSeq && (
+        <>
+          {item.mosaic_status === 'ready' && (
+            <div className="mosaic-badge ready" title="16-bit Mosaic Ready (Click to View)">
+              <Sparkles size={11} />
+              <span>Mosaic Ready</span>
+            </div>
+          )}
+          {item.mosaic_status === 'processing' && (
+            <div 
+              className="mosaic-badge processing" 
+              title={item.mosaic_progress?.message || "Mosaic is being processed..."}
+            >
+              <RefreshCw size={11} className="spin" />
+              <span>
+                {item.mosaic_progress && item.mosaic_progress.percent !== undefined && item.mosaic_progress.percent > 0
+                  ? `${Math.round(item.mosaic_progress.percent)}%`
+                  : 'Processing...'}
+              </span>
+            </div>
+          )}
+          {item.mosaic_status === 'queued' && (
+            <div 
+              className="mosaic-badge queued" 
+              title={`Queued (#${item.mosaic_queue_pos || 1} in line)`}
+            >
+              <Clock size={11} />
+              <span>Queued #{item.mosaic_queue_pos || 1}</span>
+            </div>
+          )}
+          {item.mosaic_status === 'none' && (
+            <div className="mosaic-badge none" title="Click thumbnail to stitch mosaic">
+              <Layers size={11} />
+              <span>Stitch Mosaic</span>
+            </div>
+          )}
+          {item.mosaic_status === 'processing' && item.mosaic_progress && (
+            <div className="mosaic-progress-bar" title={item.mosaic_progress.message}>
+              <div 
+                className="mosaic-progress-fill" 
+                style={{ width: `${Math.min(100, Math.max(4, item.mosaic_progress.percent || 0))}%` }} 
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      {item.frames !== undefined && item.frames > 0 && (
+        <div className="capture-badge">
+          <Layers size={11} />
+          <span>{item.frames} {item.frames === 1 ? 'frame' : 'frames'}</span>
+        </div>
+      )}
+
+      <div className="capture-label">
+        {item.target && (
+          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: '11px', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            ✨ {item.target}
+          </div>
+        )}
+        {item.camera_settings && Object.keys(item.camera_settings).length > 0 && (
+          <div style={{ fontSize: '10px', color: '#8b949e', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {item.camera_settings.exposure !== undefined ? `${Math.round(item.camera_settings.exposure * 0.1)}ms` : ''}
+            {item.camera_settings.gain !== undefined ? ` · G${item.camera_settings.gain}` : ''}
+            {item.camera_settings.accumulation_count > 1 ? ` · ${item.camera_settings.accumulation_count}x` : ''}
+          </div>
+        )}
+        <div className="capture-time-row">
+          <span className="capture-time">{item.time || item.id}</span>
+          {item.format && <span className="capture-fmt-tag">{item.format.toUpperCase()}</span>}
+        </div>
+        {item.date && <div className="capture-date-row">{item.date}</div>}
+      </div>
+    </div>
+  );
+}, (prev, next) => (
+  prev.item.id === next.item.id &&
+  prev.item.thumbnail === next.item.thumbnail &&
+  prev.item.frames === next.item.frames &&
+  prev.item.mosaic_status === next.item.mosaic_status &&
+  prev.item.mosaic_queue_pos === next.item.mosaic_queue_pos &&
+  prev.item.mosaic_progress?.percent === next.item.mosaic_progress?.percent &&
+  prev.item.mosaic_progress?.message === next.item.mosaic_progress?.message &&
+  prev.item.target === next.item.target
+));
 
 function App() {
   const [controls, setControls] = useState<Controls>({
@@ -794,7 +901,9 @@ function App() {
         if (capRes.ok) {
           const data = await capRes.json();
           if (Array.isArray(data)) {
-            setCaptures(data.map(formatGalleryItem));
+            const formatted = data.map(formatGalleryItem);
+            formatted.sort((a, b) => (b.datetime || b.id).localeCompare(a.datetime || a.id));
+            setCaptures(formatted);
           }
         }
 
@@ -1174,7 +1283,9 @@ function App() {
               .then(res => res.json())
               .then(gData => {
                 if (Array.isArray(gData)) {
-                  setCaptures(gData.map(formatGalleryItem));
+                  const formatted = gData.map(formatGalleryItem);
+                  formatted.sort((a, b) => (b.datetime || b.id).localeCompare(a.datetime || a.id));
+                  setCaptures(formatted);
                 }
               })
               .catch(e => console.error("Gallery refresh error:", e));
@@ -1301,7 +1412,9 @@ function App() {
             .then(r => r.json())
             .then(gData => {
               if (Array.isArray(gData)) {
-                setCaptures(gData.map(formatGalleryItem));
+                const formatted = gData.map(formatGalleryItem);
+                formatted.sort((a, b) => (b.datetime || b.id).localeCompare(a.datetime || a.id));
+                setCaptures(formatted);
               }
             })
             .catch(() => {});
@@ -1515,104 +1628,9 @@ function App() {
               {!Array.isArray(captures) || captures.length === 0 ? (
                 <div className="empty-msg">No sequences recorded yet</div>
               ) : (
-                captures.map(item => {
-                  const isSeq = item.type === 'sequence';
-                  const statusDesc = item.mosaic_status === 'ready' 
-                    ? 'Ready (Click to View)' 
-                    : item.mosaic_status === 'processing' 
-                      ? (item.mosaic_progress?.message || 'Processing...') 
-                      : item.mosaic_status === 'queued'
-                        ? `Queued (#${item.mosaic_queue_pos || 1} in line)`
-                        : 'Not Created (Click to Stitch Mosaic)';
-                  const titleTip = isSeq
-                    ? `${item.datetime || item.id} • ${item.frames || 1} frames • Mosaic: ${statusDesc}`
-                    : `${item.datetime || item.id} • Single frame`;
-
-                  return (
-                    <div 
-                      key={item.id} 
-                      className="capture-item" 
-                      title={titleTip} 
-                      onClick={() => handleThumbnailClick(item)}
-                    >
-                      <img src={item.thumbnail} alt={item.datetime || item.id} loading="lazy" />
-                      
-                      {isSeq && (
-                        <>
-                          {item.mosaic_status === 'ready' && (
-                            <div className="mosaic-badge ready" title="16-bit Mosaic Ready (Click to View)">
-                              <Sparkles size={11} />
-                              <span>Mosaic Ready</span>
-                            </div>
-                          )}
-                          {item.mosaic_status === 'processing' && (
-                            <div 
-                              className="mosaic-badge processing" 
-                              title={item.mosaic_progress?.message || "Mosaic is being processed..."}
-                            >
-                              <RefreshCw size={11} className="spin" />
-                              <span>
-                                {item.mosaic_progress && item.mosaic_progress.percent !== undefined && item.mosaic_progress.percent > 0
-                                  ? `${Math.round(item.mosaic_progress.percent)}%`
-                                  : 'Processing...'}
-                              </span>
-                            </div>
-                          )}
-                          {item.mosaic_status === 'queued' && (
-                            <div 
-                              className="mosaic-badge queued" 
-                              title={`Queued (#${item.mosaic_queue_pos || 1} in line)`}
-                            >
-                              <Clock size={11} />
-                              <span>Queued #{item.mosaic_queue_pos || 1}</span>
-                            </div>
-                          )}
-                          {item.mosaic_status === 'none' && (
-                            <div className="mosaic-badge none" title="Click thumbnail to stitch mosaic">
-                              <Layers size={11} />
-                              <span>Stitch Mosaic</span>
-                            </div>
-                          )}
-                          {item.mosaic_status === 'processing' && item.mosaic_progress && (
-                            <div className="mosaic-progress-bar" title={item.mosaic_progress.message}>
-                              <div 
-                                className="mosaic-progress-fill" 
-                                style={{ width: `${Math.min(100, Math.max(4, item.mosaic_progress.percent || 0))}%` }} 
-                              />
-                            </div>
-                          )}
-                        </>
-                      )}
-
-                      {item.frames !== undefined && item.frames > 0 && (
-                        <div className="capture-badge">
-                          <Layers size={11} />
-                          <span>{item.frames} {item.frames === 1 ? 'frame' : 'frames'}</span>
-                        </div>
-                      )}
-
-                      <div className="capture-label">
-                        {item.target && (
-                          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: '11px', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            ✨ {item.target}
-                          </div>
-                        )}
-                        {item.camera_settings && Object.keys(item.camera_settings).length > 0 && (
-                          <div style={{ fontSize: '10px', color: '#8b949e', marginBottom: '2px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {item.camera_settings.exposure !== undefined ? `${Math.round(item.camera_settings.exposure * 0.1)}ms` : ''}
-                            {item.camera_settings.gain !== undefined ? ` · G${item.camera_settings.gain}` : ''}
-                            {item.camera_settings.accumulation_count > 1 ? ` · ${item.camera_settings.accumulation_count}x` : ''}
-                          </div>
-                        )}
-                        <div className="capture-time-row">
-                          <span className="capture-time">{item.time || item.id}</span>
-                          {item.format && <span className="capture-fmt-tag">{item.format.toUpperCase()}</span>}
-                        </div>
-                        {item.date && <div className="capture-date-row">{item.date}</div>}
-                      </div>
-                    </div>
-                  );
-                })
+                captures.map(item => (
+                  <GalleryCard key={item.id} item={item} onSelect={handleThumbnailClick} />
+                ))
               )}
             </div>
           </section>

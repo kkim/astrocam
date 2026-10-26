@@ -1,6 +1,6 @@
 # Plan: Zero-Weight Bad Pixels *and Their Vicinity* in Mosaics
 
-Status: **Proposed** (not implemented)
+Status: **Implemented**
 
 ## 1. Where we are today
 

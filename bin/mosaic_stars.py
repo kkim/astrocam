@@ -236,6 +236,44 @@ def create_feather_mask(h: int, w: int, feather_px: int = 15) -> np.ndarray:
     return np.outer(ramp_y, ramp_x)
 
 
+def extract_defect_mask(arr: np.ndarray) -> np.ndarray:
+    """
+    Converts either a 2D binary defect mask or a 2D/3D master dark baseline frame
+    into a 2D uint8 defect mask (1 = defect, 0 = healthy) using the standard
+    max(med + 6, med + 5 * sigma) threshold.
+    """
+    if arr.ndim == 2 and arr.dtype in (np.uint8, np.bool_) and np.max(arr) <= 1:
+        return (arr > 0).astype(np.uint8)
+    if arr.ndim == 3:
+        dark_gray = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    else:
+        dark_gray = arr.astype(np.float32)
+    med = float(np.median(dark_gray))
+    mad = float(np.median(np.abs(dark_gray - med)))
+    sigma = max(1.0, 1.4826 * mad)
+    threshold = max(med + 6.0, med + 5.0 * sigma)
+    return (dark_gray > threshold).astype(np.uint8)
+
+
+def build_defect_weights(d_mask: np.ndarray, radius: int = 1, soft_px: int = 0) -> np.ndarray:
+    """
+    1.0 = healthy, 0.0 = defect or within `radius` px; optional linear
+    ramp back to 1.0 over the next `soft_px` px.
+    """
+    bad = extract_defect_mask(d_mask)
+    if radius > 0:
+        # For radius=1, use MORPH_RECT (full 3x3 neighborhood) so diagonal Bayer/DCT
+        # spill at (+/-1, +/-1) is masked; for larger radii use MORPH_ELLIPSE.
+        shape = cv2.MORPH_RECT if radius == 1 else cv2.MORPH_ELLIPSE
+        k = cv2.getStructuringElement(shape, (2 * radius + 1, 2 * radius + 1))
+        bad = cv2.dilate(bad, k)
+    if soft_px <= 0:
+        return (1.0 - bad).astype(np.float64)
+    # distance (px) from nearest bad pixel -> ramp 0..1
+    dist = cv2.distanceTransform(1 - bad, cv2.DIST_L2, 3)
+    return np.clip(dist / float(soft_px), 0.0, 1.0).astype(np.float64)
+
+
 def stretch_hdr(
     img: np.ndarray,
     valid_mask: np.ndarray,
@@ -316,6 +354,9 @@ def combine_images(
     black_percentile: float = 0.5,
     max_frames: Optional[int] = None,
     defect_mask_path: Optional[str] = None,
+    defect_radius: int = 1,
+    defect_soft_px: int = 0,
+    use_defect_mask: bool = True,
     save_individual_renders: bool = True,
     verbose: bool = True,
     filter_stripes: bool = True,
@@ -326,13 +367,17 @@ def combine_images(
 
     Args:
         input_dir: Path to directory containing image files (.tif, .tiff, .png, etc.).
-        output_dir: Directory to save outputs (defaults to <input_dir>/mosaic).
+        output_dir: Directory to save outputs (defaults to <input_dir>/mosaic_v1).
         fov_mode: 'full' (canvas expands to fit entire drift FOV) or 'first' (fixed to 1st frame).
         feather_px: Pixels along image boundary for smooth seam feathering.
         stretch_method: 'asinh', 'mtf', 'log', or 'linear'.
         stretch_factor: Stretch strength parameter.
         black_percentile: Lower percentile for background black-point calibration.
         max_frames: Limit number of frames to process (useful for rapid testing).
+        defect_mask_path: Path to defect_mask.npy (defaults to captures/calibration/defect_mask.npy).
+        defect_radius: Dilation radius around bad pixels to zero-weight neighbor spill.
+        defect_soft_px: Soft linear ramp distance in pixels outside the dilated defect zone.
+        use_defect_mask: Whether to apply sensor defect masking.
         save_individual_renders: Save linear 16-bit, HDR 16-bit, HDR 8-bit, and weight map.
         verbose: Print progress to stdout.
         filter_stripes: Detect MJPEG packet-loss stripes, exclude them from star
@@ -348,7 +393,7 @@ def combine_images(
         raise ValueError(f"Input directory does not exist: {input_dir}")
 
     if output_dir is None:
-        output_dir = os.path.join(input_dir, "mosaic")
+        output_dir = os.path.join(input_dir, "mosaic_v1")
     os.makedirs(output_dir, exist_ok=True)
 
     # Gather image files
@@ -378,6 +423,39 @@ def combine_images(
 
     t_start = time.time()
 
+    # Pre-load sensor defect mask if enabled and available
+    raw_defect_mask = None
+    if use_defect_mask:
+        if defect_mask_path is None:
+            calib_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../captures/calibration"))
+            # 1. Check session nav.json for exact exposure/gain dark baseline
+            nav_path = os.path.join(input_dir, "nav.json")
+            if os.path.exists(nav_path):
+                try:
+                    with open(nav_path, "r") as f:
+                        nav_data = json.load(f)
+                    b_key = (nav_data.get("camera_settings") or {}).get("baseline_key")
+                    if b_key:
+                        candidate = os.path.join(calib_root, "baselines", f"{b_key}.npy")
+                        if os.path.exists(candidate):
+                            defect_mask_path = candidate
+                except Exception:
+                    pass
+            # 2. Fallback to global defect_mask.npy
+            if defect_mask_path is None:
+                default_mask_path = os.path.join(calib_root, "defect_mask.npy")
+                if os.path.exists(default_mask_path):
+                    defect_mask_path = default_mask_path
+
+        if defect_mask_path and os.path.exists(defect_mask_path):
+            try:
+                raw_defect_mask = np.load(defect_mask_path)
+            except Exception as e:
+                print(f"[!] Warning reading defect mask ({defect_mask_path}): {e}")
+
+    pixel_weights = None
+    defect_bool = None
+
     # Pass 1: Star centroid detection
     if verbose:
         print(f"[*] Step 1/3: Detecting star centroids across {len(valid_files)} frames...")
@@ -402,6 +480,21 @@ def combine_images(
 
         if ref_shape is None:
             ref_shape = img.shape
+            h0, w0 = ref_shape[:2]
+            if raw_defect_mask is not None:
+                if raw_defect_mask.shape[:2] == (h0, w0):
+                    binary_defects = extract_defect_mask(raw_defect_mask)
+                    pixel_weights = build_defect_weights(binary_defects, radius=defect_radius, soft_px=defect_soft_px)
+                    defect_bool = (pixel_weights == 0.0)
+                    raw_defects = int(np.sum(binary_defects > 0))
+                    masked_px = int(np.sum(defect_bool))
+                    pct_sensor = (masked_px / float(h0 * w0)) * 100.0
+                    if verbose:
+                        print(f"[*] Defect mask ({os.path.basename(defect_mask_path)}): {raw_defects} defects -> {masked_px} px masked after dilation (r={defect_radius}), {pct_sensor:.2f}% of sensor")
+                    if pct_sensor > 5.0:
+                        print(f"[!] Warning: Defect mask covers {pct_sensor:.2f}% of sensor (>5%). Consider a smaller --defect-radius or recalibration.")
+                else:
+                    print(f"[!] Warning: Defect mask shape {raw_defect_mask.shape} does not match frame shape {(h0, w0)}; ignoring defect mask.")
 
         # Detect MJPEG packet-loss stripes; exclude them from star search
         stripe_rects = detect_corruption_stripes(img) if filter_stripes else []
@@ -414,7 +507,16 @@ def combine_images(
                 skipped_corrupt += 1
                 continue
 
-        res = detect_star_centroid(img, exclude_mask=stripe_mask)
+        if stripe_mask is not None and defect_bool is not None and img.shape[:2] == defect_bool.shape:
+            exclude_mask = stripe_mask | defect_bool
+        elif stripe_mask is not None:
+            exclude_mask = stripe_mask
+        elif defect_bool is not None and img.shape[:2] == defect_bool.shape:
+            exclude_mask = defect_bool
+        else:
+            exclude_mask = None
+
+        res = detect_star_centroid(img, exclude_mask=exclude_mask)
         if res is not None:
             cx, cy, peak, bg = res
             detections.append({
@@ -493,28 +595,7 @@ def combine_images(
     accumulator = np.zeros(acc_shape, dtype=np.float64)
     weight_map = np.zeros((canvas_h, canvas_w), dtype=np.float64)
 
-    feather_mask = create_feather_mask(h, w, feather_px)
-
-    # Load sensor defect mask if provided or available in captures/calibration
-    if defect_mask_path is None:
-        default_mask_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../captures/calibration/defect_mask.npy"))
-        if os.path.exists(default_mask_path):
-            defect_mask_path = default_mask_path
-
-    pixel_weights = None
-    if defect_mask_path and os.path.exists(defect_mask_path):
-        try:
-            d_mask = np.load(defect_mask_path)
-            if d_mask.shape == (h, w):
-                # 0.0 weight for defective/hot pixels, 1.0 for healthy pixels
-                pixel_weights = np.where(d_mask > 0, 0.0, 1.0).astype(np.float64)
-                if verbose:
-                    defect_count = int(np.sum(d_mask > 0))
-                    print(f"[*] Applied defect mask ({os.path.basename(defect_mask_path)}): {defect_count} defective pixels down-weighted to 0.0 in mosaic.")
-        except Exception as e:
-            if verbose:
-                print(f"[!] Warning reading defect mask: {e}")
-
+    feather_mask = create_feather_mask(h, w, feather_px).astype(np.float64)
     sensor_weight = feather_mask * pixel_weights if pixel_weights is not None else feather_mask
 
     for idx, (d, (tx, ty)) in enumerate(zip(detections, shifts)):
@@ -553,8 +634,13 @@ def combine_images(
 
         M = np.array([[1.0, 0.0, total_tx], [0.0, 1.0, total_ty]], dtype=np.float32)
 
-        warped_frame = cv2.warpAffine(
-            frame_f,
+        # Premultiply source frame by weights prior to warping so zero-weight defects/stripes
+        # never bleed into neighboring canvas pixels during sub-pixel bilinear interpolation
+        w_arr = frame_sensor_weight
+        frame_w = frame_f * w_arr[:, :, None] if num_channels > 1 else frame_f * w_arr
+
+        warped_frame_w = cv2.warpAffine(
+            frame_w,
             M,
             (canvas_w, canvas_h),
             flags=cv2.INTER_LINEAR,
@@ -563,7 +649,7 @@ def combine_images(
         )
 
         warped_weights = cv2.warpAffine(
-            frame_sensor_weight,
+            w_arr,
             M,
             (canvas_w, canvas_h),
             flags=cv2.INTER_LINEAR,
@@ -571,11 +657,7 @@ def combine_images(
             borderValue=0.0,
         )
 
-        if num_channels > 1:
-            accumulator += warped_frame * warped_weights[:, :, None]
-        else:
-            accumulator += warped_frame * warped_weights
-
+        accumulator += warped_frame_w
         weight_map += warped_weights
 
         if (idx + 1) % 10 == 0 or (idx + 1) == len(detections):
@@ -690,7 +772,7 @@ def parse_args():
         "-o", "--output-dir",
         type=str,
         default=None,
-        help="Output directory (defaults to <input_dir>/mosaic)",
+        help="Output directory (defaults to <input_dir>/mosaic_v1)",
     )
     parser.add_argument(
         "--fov",
@@ -735,6 +817,23 @@ def parse_args():
         help="Path to defect_mask.npy containing sensor defect map to zero-weight hot pixels",
     )
     parser.add_argument(
+        "--defect-radius",
+        type=int,
+        default=1,
+        help="Dilation radius in pixels around each bad pixel to zero-weight neighbor spill",
+    )
+    parser.add_argument(
+        "--defect-soft-px",
+        type=int,
+        default=0,
+        help="Soft linear ramp distance in pixels outside the dilated defect zone",
+    )
+    parser.add_argument(
+        "--no-defect-mask",
+        action="store_true",
+        help="Disable sensor defect mask weighting (useful for A/B comparison)",
+    )
+    parser.add_argument(
         "--no-stripe-filter",
         action="store_true",
         help="Disable detection/zero-weighting of MJPEG packet-loss stripes",
@@ -754,6 +853,9 @@ if __name__ == "__main__":
         black_percentile=args.black_percentile,
         max_frames=args.max_frames,
         defect_mask_path=args.defect_mask,
+        defect_radius=args.defect_radius,
+        defect_soft_px=args.defect_soft_px,
+        use_defect_mask=not args.no_defect_mask,
         save_individual_renders=True,
         verbose=True,
         filter_stripes=not args.no_stripe_filter,

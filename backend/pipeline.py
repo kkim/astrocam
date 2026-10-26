@@ -596,12 +596,25 @@ class AstroPipeline:
         master_baseline = np.mean(frames, axis=0)
         
         key = self.baseline_capture_key or "default"
-        baselines_dir = os.path.join(self.recorder.base_dir, "calibration", "baselines")
+        calib_dir = os.path.join(self.recorder.base_dir, "calibration")
+        baselines_dir = os.path.join(calib_dir, "baselines")
         os.makedirs(baselines_dir, exist_ok=True)
         file_path = os.path.join(baselines_dir, f"{key}.npy")
         try:
             np.save(file_path, master_baseline)
-            event_logger.log(f"Saved baseline for {key} ({len(frames)} frames averaged).")
+            # Also compute and persist defect_mask.npy from this dark baseline
+            if master_baseline.ndim == 3:
+                dark_gray = cv2.cvtColor(master_baseline.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+            else:
+                dark_gray = master_baseline.copy()
+            med = float(np.median(dark_gray))
+            mad = float(np.median(np.abs(dark_gray - med)))
+            sigma = max(1.0, 1.4826 * mad)
+            threshold = max(med + 6.0, med + 5.0 * sigma)
+            defect_mask = (dark_gray > threshold).astype(np.uint8)
+            np.save(os.path.join(calib_dir, "defect_mask.npy"), defect_mask)
+            self.defect_mask = defect_mask
+            event_logger.log(f"Saved baseline for {key} ({len(frames)} frames averaged, {int(np.sum(defect_mask))} defects mapped).")
         except Exception as e:
             event_logger.log(f"Error saving baseline {key}: {e}")
             

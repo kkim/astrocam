@@ -16,7 +16,8 @@ AstroCam is an automated astrophotography rig using a Raspberry Pi, an SV205 cam
 
 ## Key Conventions
 - **Mock Mode:** System defaults to `MockAstroRig` if camera hardware isn't detected. Mock rig simulates noise and stacking for UI testing.
-- **Stacking Logic:** Changing any camera parameter (exposure, gain, etc.) or the `average` (N) count automatically resets the Tier 1 accumulator to prevent "ghosting" artifacts.
+- **Stacking Logic:** Changing any camera parameter (exposure, gain, etc.), pointing coordinates, or the `average` (N) count automatically resets the Tier 1 accumulator to prevent "ghosting" artifacts.
+- **Mosaic Defect & Stripe Handling:** `bin/mosaic_stars.py` saves outputs to `<session>/mosaic_v1` (preserving legacy `<session>/mosaic` renders), loads per-session baseline or `captures/calibration/defect_mask.npy`, dilates defects (`--defect-radius 1`, optional `--defect-soft-px`), excludes defects and MJPEG packet-loss stripes from guide-star centroiding, and uses premultiplied bilinear warping so zero-weight pixels never bleed into neighboring canvas pixels.
 - **Paths:** Captures are stored in `/home/kio/projects/astrocam/captures`.
 - **API:** Backend runs on port 8000; Frontend on 5173.
 
