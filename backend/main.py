@@ -637,16 +637,27 @@ def get_mosaic_status(session_id: str):
 def get_mosaic_linear16(session_id: str):
     s_dir = os.path.join(CAPTURES_DIR, session_id)
     tif_path = os.path.join(s_dir, MOSAIC_SUBDIR, "mosaic_linear_16bit.tif")
+    is_mosaic = True
     if not os.path.exists(tif_path):
         fallback_path = os.path.join(s_dir, "mosaic", "mosaic_linear_16bit.tif")
         if os.path.exists(fallback_path):
             tif_path = fallback_path
         else:
-            return Response(content="16-bit linear mosaic not found", status_code=404)
+            is_mosaic = False
+            files = sorted([
+                f for f in os.listdir(s_dir)
+                if not f.startswith(".") and f != "thumb.jpg" and f.lower().endswith((".tif", ".tiff", ".jpg", ".jpeg", ".png"))
+            ]) if os.path.isdir(s_dir) else []
+            if files:
+                tif_path = os.path.join(s_dir, files[0])
+            elif os.path.isfile(s_dir):
+                tif_path = s_dir
+            else:
+                return Response(content="16-bit linear mosaic or frame not found", status_code=404)
 
     img = cv2.imread(tif_path, cv2.IMREAD_UNCHANGED)
     if img is None:
-        return Response(content="Failed to decode 16-bit mosaic", status_code=500)
+        return Response(content="Failed to decode 16-bit mosaic or frame", status_code=500)
 
     if img.dtype == np.uint8:
         img = img.astype(np.uint16) * 257

@@ -36,9 +36,11 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
     progress_file = os.path.join(mosaic_dir, ".progress.json")
     meta_file = os.path.join(mosaic_dir, "mosaic_meta.json")
     nav_file = os.path.join(s_dir, "nav.json")
+    err_file = os.path.join(mosaic_dir, ".error.json")
 
     mosaic_meta = _load_json_safe(meta_file)
     nav_data = _load_json_safe(nav_file)
+    err_data = _load_json_safe(err_file)
 
     with LOCK:
         is_active = (session_id == ACTIVE_SESSION)
@@ -121,6 +123,22 @@ def get_session_mosaic_info(s_dir: str, session_id: str) -> Dict[str, Any]:
                 os.remove(progress_file)
         except Exception:
             pass
+
+    if err_data and not is_active and queue_pos == 0:
+        return {
+            "has_mosaic": False,
+            "mosaic_status": "failed",
+            "mosaic_url": None,
+            "mosaic_mtime": err_data.get("timestamp", 0),
+            "mosaic_progress": {
+                "percent": 0,
+                "message": err_data.get("message") or err_data.get("error") or "Mosaic stitching failed",
+                "stage": "failed",
+            },
+            "mosaic_queue_pos": 0,
+            "mosaic_meta": mosaic_meta,
+            "nav": nav_data,
+        }
 
     return {
         "has_mosaic": False,
@@ -268,9 +286,27 @@ def _queue_worker_loop():
 
             if res.returncode == 0 and os.path.exists(real_mosaic_marker):
                 event_logger.log(f"Mosaic: Finished stitching {session_id} successfully!")
+                err_file = os.path.join(output_dir, ".error.json")
+                if os.path.exists(err_file):
+                    try:
+                        os.remove(err_file)
+                    except Exception:
+                        pass
             else:
                 err_snippet = res.stderr.strip()[-300:] if res.stderr else "Unknown error"
                 event_logger.log(f"Mosaic error on {session_id}: {err_snippet}")
+                err_file = os.path.join(output_dir, ".error.json")
+                try:
+                    lines = [ln.strip() for ln in err_snippet.splitlines() if ln.strip()]
+                    last_msg = lines[-1] if lines else "Stitching failed"
+                    with open(err_file, "w") as ef:
+                        json.dump({
+                            "error": err_snippet,
+                            "message": last_msg,
+                            "timestamp": time.time(),
+                        }, ef)
+                except Exception:
+                    pass
                 if not os.path.exists(real_mosaic_marker):
                     try:
                         if os.path.exists(mosaic_hdr_path):
@@ -279,6 +315,12 @@ def _queue_worker_loop():
                         pass
         except Exception as e:
             event_logger.log(f"Mosaic exception on {session_id}: {e}")
+            err_file = os.path.join(output_dir, ".error.json")
+            try:
+                with open(err_file, "w") as ef:
+                    json.dump({"error": str(e), "message": str(e), "timestamp": time.time()}, ef)
+            except Exception:
+                pass
             if not os.path.exists(real_mosaic_marker):
                 try:
                     if os.path.exists(mosaic_hdr_path):
@@ -364,6 +406,12 @@ def trigger_mosaic_stitching(session_id: str, s_dir: str, options: Optional[Dict
         if force and os.path.exists(real_mosaic_marker):
             try:
                 os.remove(real_mosaic_marker)
+            except Exception:
+                pass
+        err_file = os.path.join(output_dir, ".error.json")
+        if os.path.exists(err_file):
+            try:
+                os.remove(err_file)
             except Exception:
                 pass
 

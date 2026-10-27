@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, memo } from 'react';
 import './App.css';
-import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles, Save, Clock, Star, Trash2 } from 'lucide-react';
+import { Camera, Sliders, Zap, Menu, X, Terminal, Grid, RefreshCw, RotateCcw, Compass, Circle, Square, Layers, Sparkles, Save, Clock, Star, Trash2, AlertTriangle } from 'lucide-react';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -234,7 +234,7 @@ interface GalleryItem {
   format?: string;
   camera_settings?: Record<string, any>;
   has_mosaic?: boolean;
-  mosaic_status?: 'ready' | 'processing' | 'queued' | 'none';
+  mosaic_status?: 'ready' | 'processing' | 'queued' | 'failed' | 'none';
   mosaic_url?: string;
   mosaic_mtime?: number;
   mosaic_progress?: {
@@ -292,10 +292,12 @@ const GalleryCard = memo(({
   item,
   onSelect,
   onToggleFavorite,
+  onDeleteCapture,
 }: {
   item: GalleryItem;
   onSelect: (item: GalleryItem) => void;
   onToggleFavorite?: (item: GalleryItem) => void;
+  onDeleteCapture?: (item: GalleryItem) => void;
 }) => {
   const isSeq = item.type === 'sequence';
   const statusDesc = item.mosaic_status === 'ready' 
@@ -304,7 +306,9 @@ const GalleryCard = memo(({
       ? (item.mosaic_progress?.message || 'Processing...') 
       : item.mosaic_status === 'queued'
         ? `Queued (#${item.mosaic_queue_pos || 1} in line)`
-        : 'Not Created (Click to Stitch Mosaic)';
+        : item.mosaic_status === 'failed'
+          ? `Failed: ${item.mosaic_progress?.message || 'Alignment failed'}`
+          : 'Not Created (Click to View/Stitch)';
   const titleTip = isSeq
     ? `${item.datetime || item.id} • ${item.frames || 1} frames • Mosaic: ${statusDesc}`
     : `${item.datetime || item.id} • Single frame`;
@@ -334,12 +338,31 @@ const GalleryCard = memo(({
         />
       </button>
 
+      {/* Direct Delete Button on Card */}
+      <button
+        type="button"
+        className="capture-delete-btn"
+        title="Delete this capture (with confirmation)"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDeleteCapture?.(item);
+        }}
+      >
+        <Trash2 size={12} color="rgba(255, 255, 255, 0.85)" />
+      </button>
+
       {isSeq && (
         <>
           {item.mosaic_status === 'ready' && (
             <div className="mosaic-badge ready" title="16-bit Mosaic Ready (Click to View)">
               <Sparkles size={11} />
               <span>Mosaic Ready</span>
+            </div>
+          )}
+          {item.mosaic_status === 'failed' && (
+            <div className="mosaic-badge failed" title={item.mosaic_progress?.message || "Mosaic stitching failed (Click to inspect or delete)"}>
+              <AlertTriangle size={11} />
+              <span>Mosaic Failed</span>
             </div>
           )}
           {item.mosaic_status === 'processing' && (
@@ -365,7 +388,7 @@ const GalleryCard = memo(({
             </div>
           )}
           {item.mosaic_status === 'none' && (
-            <div className="mosaic-badge none" title="Click thumbnail to stitch mosaic">
+            <div className="mosaic-badge none" title="Click thumbnail to view and stitch mosaic">
               <Layers size={11} />
               <span>Stitch Mosaic</span>
             </div>
@@ -1484,13 +1507,24 @@ const MosaicViewerModal = ({
                 {mosaicMeta?.valid_files ? `/${mosaicMeta.valid_files}` : ''} frames)
               </span>
             )}
-            {mosaicMeta && (
+            {mosaicMeta ? (
               <span className="mosaic-diag-pill" title="Alignment diagnostic summary">
                 {mosaicMeta.constellation_stars && mosaicMeta.constellation_stars > 1
                   ? `${mosaicMeta.constellation_stars}-Star Constellation`
                   : '1-Star Track'}
                 {mosaicMeta.identity_swaps_prevented ? ` • ${mosaicMeta.identity_swaps_prevented} swaps resolved` : ''}
                 {mosaicMeta.static_peaks_rejected ? ` • ${mosaicMeta.static_peaks_rejected} warm px rejected` : ''}
+              </span>
+            ) : (
+              <span
+                className="mosaic-diag-pill error"
+                style={{
+                  background: 'rgba(248, 81, 73, 0.15)',
+                  borderColor: 'rgba(248, 81, 73, 0.4)',
+                  color: '#ff7b72',
+                }}
+              >
+                {mosaicStatus === 'failed' ? 'Mosaic Failed (Raw Frame)' : 'Raw Frame Preview'}
               </span>
             )}
           </div>
@@ -1580,6 +1614,37 @@ const MosaicViewerModal = ({
             )}
           </div>
         </div>
+
+        {(mosaicStatus === 'failed' || error) && !isStitching && (
+          <div className="mosaic-failed-banner">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertTriangle size={15} color="#f85149" />
+              <span>
+                <strong>Mosaic Alignment Failed:</strong> {mosaicProgress?.message || error || 'Could not align star candidates.'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                className="mosaic-panel-btn primary"
+                onClick={handleTriggerRemosaic}
+                disabled={isStitching}
+                style={{ padding: '4px 10px', fontSize: '11px' }}
+              >
+                <RefreshCw size={12} className={isStitching ? 'spin' : ''} /> Retry Stitch
+              </button>
+              <button
+                type="button"
+                className="mosaic-panel-btn danger"
+                onClick={handleDeleteMosaic}
+                disabled={isDeleting}
+                style={{ padding: '4px 10px', fontSize: '11px', background: 'rgba(248, 81, 73, 0.25)', borderColor: '#f85149', color: '#ff7b72' }}
+              >
+                <Trash2 size={12} /> Delete Sequence
+              </button>
+            </div>
+          </div>
+        )}
 
         {isStitching && (
           <div className="mosaic-live-progress-banner">
@@ -2344,6 +2409,30 @@ function DashboardApp() {
       showToast(nextFav ? '★ Added to Favorites' : 'Removed from Favorites');
     } catch (e: any) {
       showToast(`Error updating favorite: ${e.message}`, 3000);
+    }
+  };
+
+  const handleDeleteCapture = async (item: GalleryItem) => {
+    const label = item.stars || item.target || item.datetime || item.id;
+    const frameText = item.frames ? ` (${item.frames} frame${item.frames > 1 ? 's' : ''})` : '';
+    const confirmed = window.confirm(
+      `Permanently delete "${label}"${frameText} and all associated files?\n\nWarning: This action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/mosaic/${encodeURIComponent(item.id)}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (data.success) {
+        setCaptures((prev) => prev.filter((c) => c.id !== item.id));
+        showToast(`Deleted ${label}`);
+      } else {
+        showToast(`Delete failed: ${data.error || 'Unknown error'}`, 4000);
+      }
+    } catch (e: any) {
+      showToast(`Error deleting: ${e.message}`, 4000);
     }
   };
   const [cameraEngine, setCameraEngine] = useState<string>('mock');
@@ -3408,64 +3497,12 @@ function DashboardApp() {
       return;
     }
 
-    if (item.mosaic_status === 'ready' && item.mosaic_url) {
-      const params = new URLSearchParams({ mosaic: item.id });
-      if (item.target) params.set('target', item.target);
-      if (item.datetime) params.set('datetime', item.datetime);
-      if (item.frames !== undefined) params.set('frames', String(item.frames));
-      window.open(`${window.location.origin}${window.location.pathname}?${params.toString()}`, '_blank');
-      return;
-    }
-
-    if (item.mosaic_status === 'processing') {
-      const msg = item.mosaic_progress?.message ? `Mosaic: ${item.mosaic_progress.message}` : 'Mosaic is currently being processed.';
-      showToast(`${msg} Opening preview...`, 2500);
-      const targetUrl = item.mosaic_url || item.url;
-      window.open(`${targetUrl}?t=${Date.now()}`, '_blank');
-      return;
-    }
-
-    if (item.mosaic_status === 'queued') {
-      showToast(`Mosaic is queued (#${item.mosaic_queue_pos || 1} in line). It will start automatically once active jobs finish.`, 3000);
-      const targetUrl = item.mosaic_url || item.url;
-      window.open(`${targetUrl}?t=${Date.now()}`, '_blank');
-      return;
-    }
-
-    showToast(`Generating mosaic for ${item.id}...`, 3000);
-    setCaptures(prev => prev.map(c => c.id === item.id ? { ...c, mosaic_status: 'processing' } : c));
-
-    try {
-      const res = await fetch(`${API_BASE}/mosaic/generate/${item.id}`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success && data.url) {
-        const fullUrl = data.url.startsWith('http')
-          ? data.url
-          : `${API_BASE}${data.url.startsWith('/') ? '' : '/'}${data.url}`;
-        window.open(`${fullUrl}?t=${Date.now()}`, '_blank');
-        if (data.status === 'queued') {
-          showToast(`Mosaic queued (#${data.queue_pos || 1} in line)`, 3000);
-        }
-        setTimeout(() => {
-          fetch(`${API_BASE}/gallery`)
-            .then(r => r.json())
-            .then(gData => {
-              if (Array.isArray(gData)) {
-                const formatted = gData.map(formatGalleryItem);
-                formatted.sort((a, b) => (b.datetime || b.id).localeCompare(a.datetime || a.id));
-                setCaptures(formatted);
-              }
-            })
-            .catch(() => {});
-        }, 800);
-      } else {
-        showToast(`Error: ${data.error || 'Failed to start mosaic'}`, 4000);
-        setCaptures(prev => prev.map(c => c.id === item.id ? { ...c, mosaic_status: 'none' } : c));
-      }
-    } catch (err: any) {
-      showToast(`Mosaic request failed: ${err.message}`, 4000);
-      setCaptures(prev => prev.map(c => c.id === item.id ? { ...c, mosaic_status: 'none' } : c));
-    }
+    // Always open the mosaic viewer for sequence items so user can inspect, retry, or delete
+    const params = new URLSearchParams({ mosaic: item.id });
+    if (item.target) params.set('target', item.target);
+    if (item.datetime) params.set('datetime', item.datetime);
+    if (item.frames !== undefined) params.set('frames', String(item.frames));
+    window.open(`${window.location.origin}${window.location.pathname}?${params.toString()}`, '_blank');
   };
 
   return (
@@ -3701,6 +3738,7 @@ function DashboardApp() {
                     item={item}
                     onSelect={handleThumbnailClick}
                     onToggleFavorite={handleToggleFavorite}
+                    onDeleteCapture={handleDeleteCapture}
                   />
                 ));
               })()}
